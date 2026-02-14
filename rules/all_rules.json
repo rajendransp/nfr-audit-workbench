@@ -383,7 +383,8 @@
                               "**/.next/**",
                               "**/coverage/**"
                           ],
-        "rationale":  "In-flight requests should be cancellable during navigation/unmount to avoid stale updates and wasted network work."
+        "rationale":  "In-flight requests should be cancellable during navigation/unmount to avoid stale updates and wasted network work.",
+        "confidence_hint":  0.7
     },
     {
         "id":  "NFR-FE-002",
@@ -407,7 +408,8 @@
                               "**/.next/**",
                               "**/coverage/**"
                           ],
-        "rationale":  "Client calls without timeout can hang and consume resources during upstream degradation."
+        "rationale":  "Client calls without timeout can hang and consume resources during upstream degradation.",
+        "confidence_hint":  0.6
     },
     {
         "id":  "NFR-FE-003",
@@ -431,7 +433,8 @@
                               "**/.next/**",
                               "**/coverage/**"
                           ],
-        "rationale":  "Intervals that survive component teardown cause memory leaks and repeated background execution."
+        "rationale":  "Intervals that survive component teardown cause memory leaks and repeated background execution.",
+        "confidence_hint":  0.55
     },
     {
         "id":  "NFR-FE-004",
@@ -455,7 +458,8 @@
                               "**/.next/**",
                               "**/coverage/**"
                           ],
-        "rationale":  "Unhandled async errors frequently degrade UX and mask production incidents."
+        "rationale":  "Unhandled async errors frequently degrade UX and mask production incidents.",
+        "confidence_hint":  0.55
     },
     {
         "id":  "NFR-FE-005",
@@ -481,7 +485,8 @@
                               "**/.next/**",
                               "**/coverage/**"
                           ],
-        "rationale":  "Unsafe HTML injection paths can create high-impact XSS and reliability incidents."
+        "rationale":  "Unsafe HTML injection paths can create high-impact XSS and reliability incidents.",
+        "confidence_hint":  0.9
     },
     {
         "id":  "NFR-FE-006",
@@ -502,7 +507,8 @@
                               "**/.next/**",
                               "**/coverage/**"
                           ],
-        "rationale":  "Unstable keys increase rerenders and can corrupt UI state mapping."
+        "rationale":  "Unstable keys increase rerenders and can corrupt UI state mapping.",
+        "confidence_hint":  0.85
     },
     {
         "id":  "NFR-FE-007",
@@ -525,7 +531,8 @@
                               "**/.next/**",
                               "**/coverage/**"
                           ],
-        "rationale":  "Expensive synchronous work in render paths harms frame time and interaction latency."
+        "rationale":  "Expensive synchronous work in render paths harms frame time and interaction latency.",
+        "confidence_hint":  0.45
     },
     {
         "id":  "NFR-FE-008",
@@ -549,7 +556,8 @@
                               "**/.next/**",
                               "**/coverage/**"
                           ],
-        "rationale":  "Eager route loading inflates initial bundle and slows first contentful render."
+        "rationale":  "Eager route loading inflates initial bundle and slows first contentful render.",
+        "confidence_hint":  0.45
     },
     {
         "id":  "NFR-FE-009",
@@ -573,7 +581,8 @@
                               "**/.next/**",
                               "**/coverage/**"
                           ],
-        "rationale":  "Non-lazy images increase network contention and render blocking under limited bandwidth."
+        "rationale":  "Non-lazy images increase network contention and render blocking under limited bandwidth.",
+        "confidence_hint":  0.75
     },
     {
         "id":  "NFR-FE-010",
@@ -596,7 +605,8 @@
                               "**/.next/**",
                               "**/coverage/**"
                           ],
-        "rationale":  "High-frequency handlers without shaping can overload API and client runtime."
+        "rationale":  "High-frequency handlers without shaping can overload API and client runtime.",
+        "confidence_hint":  0.5
     },
     {
         "id":  "NFR-FE-011",
@@ -622,7 +632,8 @@
                               "**/*test*.*",
                               "**/*spec*.*"
                           ],
-        "rationale":  "Excessive client logging increases noise and can affect render performance in low-end devices."
+        "rationale":  "Excessive client logging increases noise and can affect render performance in low-end devices.",
+        "confidence_hint":  0.95
     },
     {
         "id":  "NFR-FE-012",
@@ -646,7 +657,106 @@
                               "**/.next/**",
                               "**/coverage/**"
                           ],
-        "rationale":  "Synchronous storage in loops blocks main thread and degrades interaction under load."
+        "rationale":  "Synchronous storage in loops blocks main thread and degrades interaction under load.",
+        "confidence_hint":  0.7
+    },
+    {
+        "id":  "NFR-FE-013",
+        "title":  "Unbounded list rendering without virtualization",
+        "category":  "performance",
+        "top_level_category":  "front_end",
+        "sub_category":  "loading",
+        "severity":  "S3",
+        "confidence_hint":  0.55,
+        "pattern":  "\\breturn\\b[\\s\\S]{0,360}\\b[A-Za-z0-9_]+\\.(map|forEach)\\s*\\(",
+        "ignore_comment_lines":  true,
+        "include_globs":  [
+                              "*.jsx",
+                              "*.tsx"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "Large list rendering without virtualization can degrade frame time and interaction latency."
+    },
+    {
+        "id":  "NFR-FE-014",
+        "title":  "useEffect data fetch missing dependency array",
+        "category":  "reliability",
+        "top_level_category":  "front_end",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "confidence_hint":  0.6,
+        "pattern":  "\\buseEffect\\s*\\(\\s*\\(\\s*\\)\\s*=\u003e[\\s\\S]{0,280}\\b(fetch|axios\\.(get|post|put|delete|request))\\b[\\s\\S]{0,280}\\)\\s*(?!,\\s*\\[)",
+        "ignore_comment_lines":  true,
+        "include_globs":  [
+                              "*.js",
+                              "*.jsx",
+                              "*.ts",
+                              "*.tsx"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "Data-fetch effects without dependency arrays can re-run unexpectedly and amplify network load."
+    },
+    {
+        "id":  "NFR-FE-015",
+        "title":  "addEventListener in effect without cleanup",
+        "category":  "reliability",
+        "top_level_category":  "front_end",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "confidence_hint":  0.6,
+        "pattern":  "\\buseEffect\\s*\\(\\s*\\(\\s*\\)\\s*=\u003e[\\s\\S]{0,320}\\baddEventListener\\s*\\([\\s\\S]{0,320}(?!return\\s*\\(\\s*\\)\\s*=\u003e[\\s\\S]{0,220}\\bremoveEventListener\\s*\\()",
+        "ignore_comment_lines":  true,
+        "include_globs":  [
+                              "*.js",
+                              "*.jsx",
+                              "*.ts",
+                              "*.tsx"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "Event listeners created in effects should be removed on cleanup to avoid leaks and duplicated handlers."
+    },
+    {
+        "id":  "NFR-FE-016",
+        "title":  "Large bundle import anti-patterns",
+        "category":  "performance",
+        "top_level_category":  "front_end",
+        "sub_category":  "loading",
+        "severity":  "S3",
+        "confidence_hint":  0.75,
+        "pattern":  "\\b(import\\s+[\\*]\\s+as\\s+[A-Za-z0-9_]+\\s+from\\s+[\"\u0027][^\"\u0027]+[\"\u0027]|import\\s+[\"\u0027]moment/locale/all[\"\u0027]|require\\s*\\(\\s*[\"\u0027]moment/locale/all[\"\u0027]\\s*\\))",
+        "ignore_comment_lines":  true,
+        "include_globs":  [
+                              "*.js",
+                              "*.jsx",
+                              "*.ts",
+                              "*.tsx"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "Broad/wildcard imports and moment locale-all import can inflate bundle size and hurt load performance."
     },
     {
         "id":  "NFR-API-001",
@@ -665,7 +775,8 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Request handlers should accept cancellation to stop work after disconnects/timeouts."
+        "rationale":  "Request handlers should accept cancellation to stop work after disconnects/timeouts.",
+        "confidence_hint":  0.65
     },
     {
         "id":  "NFR-API-002",
@@ -684,7 +795,8 @@
                               "**/bin/**",
                               "**/obj/**"
                           ],
-        "rationale":  "Very large body limits increase memory pressure and denial-of-service exposure."
+        "rationale":  "Very large body limits increase memory pressure and denial-of-service exposure.",
+        "confidence_hint":  0.9
     },
     {
         "id":  "NFR-API-003",
@@ -703,7 +815,8 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Unpaged collection endpoints can saturate CPU, memory, and downstream stores."
+        "rationale":  "Unpaged collection endpoints can saturate CPU, memory, and downstream stores.",
+        "confidence_hint":  0.5
     },
     {
         "id":  "NFR-API-004",
@@ -721,7 +834,8 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Heavy sync serialization in request pipeline can reduce throughput."
+        "rationale":  "Heavy sync serialization in request pipeline can reduce throughput.",
+        "confidence_hint":  0.8
     },
     {
         "id":  "NFR-API-005",
@@ -740,7 +854,8 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Missing cache hints can force avoidable load onto origin services."
+        "rationale":  "Missing cache hints can force avoidable load onto origin services.",
+        "confidence_hint":  0.55
     },
     {
         "id":  "NFR-API-006",
@@ -759,7 +874,8 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Returning full entities often leaks unnecessary fields and bloats payload size."
+        "rationale":  "Returning full entities often leaks unnecessary fields and bloats payload size.",
+        "confidence_hint":  0.45
     },
     {
         "id":  "NFR-API-007",
@@ -778,7 +894,8 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Upstream hangs without timeout policies can exhaust worker resources."
+        "rationale":  "Upstream hangs without timeout policies can exhaust worker resources.",
+        "confidence_hint":  0.5
     },
     {
         "id":  "NFR-API-008",
@@ -797,7 +914,8 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Aggressive retries without jitter can amplify incidents during partial outages."
+        "rationale":  "Aggressive retries without jitter can amplify incidents during partial outages.",
+        "confidence_hint":  0.55
     },
     {
         "id":  "NFR-API-009",
@@ -815,7 +933,8 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Skipping API controller conventions can weaken automatic validation and predictable behavior."
+        "rationale":  "Skipping API controller conventions can weaken automatic validation and predictable behavior.",
+        "confidence_hint":  0.8
     },
     {
         "id":  "NFR-API-010",
@@ -833,7 +952,8 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Unbounded batch processing causes bursty CPU and memory consumption."
+        "rationale":  "Unbounded batch processing causes bursty CPU and memory consumption.",
+        "confidence_hint":  0.65
     },
     {
         "id":  "NFR-API-011",
@@ -853,7 +973,8 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Lack of admission control can let traffic spikes overwhelm service capacity."
+        "rationale":  "Lack of admission control can let traffic spikes overwhelm service capacity.",
+        "confidence_hint":  0.6
     },
     {
         "id":  "NFR-API-012",
@@ -872,6 +993,191 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Synchronous body reads block worker threads and reduce concurrent request capacity."
+        "rationale":  "Synchronous body reads block worker threads and reduce concurrent request capacity.",
+        "confidence_hint":  0.85
+    },
+    {
+        "id":  "NFR-API-013",
+        "title":  "POST retry-sensitive endpoint missing idempotency key handling",
+        "category":  "reliability",
+        "top_level_category":  "rest_api",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "confidence_hint":  0.55,
+        "pattern":  "\\[HttpPost[^\\]]*\\][\\s\\S]{0,320}\\b(public|internal|protected)\\s+(async\\s+)?Task[^\\(]*\\([^\\)]*\\)[\\s\\S]{0,420}\\b(Create|Charge|Payment|Order|Checkout|Retry)\\b(?![\\s\\S]{0,220}(Idempotency-Key|IdempotencyKey))",
+        "ignore_comment_lines":  true,
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Retry-sensitive POST flows should enforce idempotency keys to avoid duplicate processing."
+    },
+    {
+        "id":  "NFR-API-014",
+        "title":  "File upload endpoint missing request size guard",
+        "category":  "reliability",
+        "top_level_category":  "rest_api",
+        "sub_category":  "loading",
+        "severity":  "S2",
+        "confidence_hint":  0.7,
+        "pattern":  "\\[HttpPost[^\\]]*\\][\\s\\S]{0,300}\\b(IFormFile|IEnumerable\u003cIFormFile\u003e|List\u003cIFormFile\u003e)\\b(?![\\s\\S]{0,220}\\[(RequestSizeLimit|DisableRequestSizeLimit|RequestFormLimits)\\b)",
+        "ignore_comment_lines":  true,
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Upload endpoints should explicitly define request size limits to prevent abuse and memory pressure."
+    },
+    {
+        "id":  "NFR-API-015",
+        "title":  "Critical endpoint marked AllowAnonymous",
+        "category":  "reliability",
+        "top_level_category":  "rest_api",
+        "sub_category":  "loading",
+        "severity":  "S1",
+        "confidence_hint":  0.8,
+        "pattern":  "\\[AllowAnonymous\\][\\s\\S]{0,180}\\[(Http(Post|Put|Delete|Patch)|Route)\\b[^\\]]*(admin|payment|billing|account|token|role|user)",
+        "ignore_comment_lines":  true,
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Critical mutation/auth endpoints should not be anonymous unless explicitly justified and reviewed."
+    },
+    {
+        "id":  "NFR-API-016",
+        "title":  "Controller CancellationToken not propagated to async service call",
+        "category":  "reliability",
+        "top_level_category":  "rest_api",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "confidence_hint":  0.6,
+        "pattern":  "\\bTask\\s*\u003c[^\u003e]+\u003e\\s+[A-Za-z0-9_]+\\s*\\([^\\)]*\\bCancellationToken\\s+[A-Za-z0-9_]+[^\\)]*\\)[\\s\\S]{0,420}\\.[A-Za-z0-9_]*Async\\s*\\((?![^\\)]*\\bCancellationToken\\b)(?![^\\)]*\\bct\\b)(?![^\\)]*\\bstoppingToken\\b)[^\\)]*\\)",
+        "ignore_comment_lines":  true,
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Controller actions accepting CancellationToken should pass it to downstream async service/repository calls."
+    },
+    {
+        "id":  "NFR-RAZOR-001",
+        "title":  "Large list rendering without Virtualize",
+        "category":  "performance",
+        "top_level_category":  "front_end",
+        "sub_category":  "loading",
+        "severity":  "S3",
+        "confidence_hint":  0.5,
+        "pattern":  "@foreach\\s*\\([^\\)]*\\)\\s*\\{(?![\\s\\S]{0,320}\u003cVirtualize\\b)",
+        "ignore_comment_lines":  true,
+        "include_globs":  [
+                              "*.razor"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**"
+                          ],
+        "rationale":  "Large item rendering in Razor without virtualization can degrade frame time and page responsiveness."
+    },
+    {
+        "id":  "NFR-RAZOR-002",
+        "title":  "Frequent @oninput handler without shaping",
+        "category":  "performance",
+        "top_level_category":  "front_end",
+        "sub_category":  "loading",
+        "severity":  "S3",
+        "confidence_hint":  0.55,
+        "pattern":  "@on(input|keyup)\\s*=\\s*\"[^\"]+\"(?![\\s\\S]{0,180}(Debounce|Throttle|debounce|throttle))",
+        "ignore_comment_lines":  true,
+        "include_globs":  [
+                              "*.razor"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**"
+                          ],
+        "rationale":  "High-frequency UI handlers without debounce/throttle can overload rendering and backend requests."
+    },
+    {
+        "id":  "NFR-RAZOR-003",
+        "title":  "IJSRuntime call inside loop",
+        "category":  "performance",
+        "top_level_category":  "front_end",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "confidence_hint":  0.65,
+        "pattern":  "\\b(for(each)?|while)\\b[\\s\\S]{0,360}\\b(JS|jsRuntime|IJSRuntime)\\.(Invoke|InvokeAsync)\\b",
+        "ignore_comment_lines":  true,
+        "include_globs":  [
+                              "*.razor",
+                              "*.razor.cs",
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Repeated JS interop calls inside loops can create severe client/server latency and contention."
+    },
+    {
+        "id":  "NFR-RAZOR-004",
+        "title":  "Raw HTML rendering via MarkupString",
+        "category":  "reliability",
+        "top_level_category":  "front_end",
+        "sub_category":  "loading",
+        "severity":  "S1",
+        "confidence_hint":  0.85,
+        "pattern":  "(new\\s+MarkupString\\s*\\(|\\(MarkupString\\)\\s*[A-Za-z_][A-Za-z0-9_]*)",
+        "ignore_comment_lines":  true,
+        "include_globs":  [
+                              "*.razor",
+                              "*.razor.cs",
+                              "*.cshtml",
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Raw HTML rendering should be tightly controlled to avoid unsafe content injection paths."
+    },
+    {
+        "id":  "NFR-RAZOR-005",
+        "title":  "Synchronous work in lifecycle method",
+        "category":  "performance",
+        "top_level_category":  "front_end",
+        "sub_category":  "performance",
+        "severity":  "S2",
+        "confidence_hint":  0.6,
+        "pattern":  "\\b(OnInitialized|OnParametersSet)\\s*\\([^\\)]*\\)\\s*\\{[\\s\\S]{0,280}\\b(Thread\\.Sleep|File\\.ReadAllText|Result\\b|\\.Wait\\s*\\()",
+        "ignore_comment_lines":  true,
+        "include_globs":  [
+                              "*.razor.cs",
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Blocking operations in component lifecycle methods can freeze rendering and hurt UX under load."
     }
 ]

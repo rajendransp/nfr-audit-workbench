@@ -1,0 +1,37 @@
+[
+  {
+    "name": "fe_014_detects_useeffect_fetch_without_dependency_array",
+    "rule_id": "NFR-FE-014",
+    "file": "component.tsx",
+    "content": "import { useEffect } from 'react';\nexport function C(){ useEffect(() => { fetch('/api/items'); }); return null; }\n",
+    "expected_match_lines": [2]
+  },
+  {
+    "name": "fe_014_skips_when_dependency_array_present",
+    "rule_id": "NFR-FE-014",
+    "file": "component2.tsx",
+    "content": "import { useEffect } from 'react';\nexport function C(){ useEffect(() => { fetch('/api/items'); }, []); return null; }\n",
+    "expected_match_lines": []
+  },
+  {
+    "name": "fe_015_detects_addEventListener_without_cleanup",
+    "rule_id": "NFR-FE-015",
+    "file": "listener.tsx",
+    "content": "import { useEffect } from 'react';\nexport function L(){ useEffect(() => { window.addEventListener('resize', onResize); }, []); return null; }\n",
+    "expected_match_lines": [2]
+  },
+  {
+    "name": "api_016_detects_missing_ct_propagation",
+    "rule_id": "NFR-API-016",
+    "file": "Controller.cs",
+    "content": "using System.Threading;\nusing System.Threading.Tasks;\npublic class C { public async Task<IActionResult> Post(CancellationToken ct){ await service.SaveAsync(model); return Ok(); } }\n",
+    "expected_match_lines": [3]
+  },
+  {
+    "name": "api_016_skips_when_ct_propagated",
+    "rule_id": "NFR-API-016",
+    "file": "Controller2.cs",
+    "content": "using System.Threading;\nusing System.Threading.Tasks;\npublic class C { public async Task<IActionResult> Post(CancellationToken ct){ await service.SaveAsync(model, ct); return Ok(); } }\n",
+    "expected_match_lines": []
+  }
+]

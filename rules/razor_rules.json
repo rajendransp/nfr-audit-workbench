@@ -1,0 +1,72 @@
+[
+  {
+    "id": "NFR-RAZOR-001",
+    "title": "Large list rendering without Virtualize",
+    "category": "performance",
+    "top_level_category": "front_end",
+    "sub_category": "loading",
+    "severity": "S3",
+    "confidence_hint": 0.5,
+    "pattern": "@foreach\\s*\\([^\\)]*\\)\\s*\\{(?![\\s\\S]{0,320}<Virtualize\\b)",
+    "ignore_comment_lines": true,
+    "include_globs": ["*.razor"],
+    "exclude_globs": ["**/bin/**", "**/obj/**"],
+    "rationale": "Large item rendering in Razor without virtualization can degrade frame time and page responsiveness."
+  },
+  {
+    "id": "NFR-RAZOR-002",
+    "title": "Frequent @oninput handler without shaping",
+    "category": "performance",
+    "top_level_category": "front_end",
+    "sub_category": "loading",
+    "severity": "S3",
+    "confidence_hint": 0.55,
+    "pattern": "@on(input|keyup)\\s*=\\s*\"[^\"]+\"(?![\\s\\S]{0,180}(Debounce|Throttle|debounce|throttle))",
+    "ignore_comment_lines": true,
+    "include_globs": ["*.razor"],
+    "exclude_globs": ["**/bin/**", "**/obj/**"],
+    "rationale": "High-frequency UI handlers without debounce/throttle can overload rendering and backend requests."
+  },
+  {
+    "id": "NFR-RAZOR-003",
+    "title": "IJSRuntime call inside loop",
+    "category": "performance",
+    "top_level_category": "front_end",
+    "sub_category": "concurrency",
+    "severity": "S2",
+    "confidence_hint": 0.65,
+    "pattern": "\\b(for(each)?|while)\\b[\\s\\S]{0,360}\\b(JS|jsRuntime|IJSRuntime)\\.(Invoke|InvokeAsync)\\b",
+    "ignore_comment_lines": true,
+    "include_globs": ["*.razor", "*.razor.cs", "*.cs"],
+    "exclude_globs": ["**/bin/**", "**/obj/**", "**/*Tests*.cs"],
+    "rationale": "Repeated JS interop calls inside loops can create severe client/server latency and contention."
+  },
+  {
+    "id": "NFR-RAZOR-004",
+    "title": "Raw HTML rendering via MarkupString",
+    "category": "reliability",
+    "top_level_category": "front_end",
+    "sub_category": "loading",
+    "severity": "S1",
+    "confidence_hint": 0.85,
+    "pattern": "(new\\s+MarkupString\\s*\\(|\\(MarkupString\\)\\s*[A-Za-z_][A-Za-z0-9_]*)",
+    "ignore_comment_lines": true,
+    "include_globs": ["*.razor", "*.razor.cs", "*.cshtml", "*.cs"],
+    "exclude_globs": ["**/bin/**", "**/obj/**", "**/*Tests*.cs"],
+    "rationale": "Raw HTML rendering should be tightly controlled to avoid unsafe content injection paths."
+  },
+  {
+    "id": "NFR-RAZOR-005",
+    "title": "Synchronous work in lifecycle method",
+    "category": "performance",
+    "top_level_category": "front_end",
+    "sub_category": "performance",
+    "severity": "S2",
+    "confidence_hint": 0.6,
+    "pattern": "\\b(OnInitialized|OnParametersSet)\\s*\\([^\\)]*\\)\\s*\\{[\\s\\S]{0,280}\\b(Thread\\.Sleep|File\\.ReadAllText|Result\\b|\\.Wait\\s*\\()",
+    "ignore_comment_lines": true,
+    "include_globs": ["*.razor.cs", "*.cs"],
+    "exclude_globs": ["**/bin/**", "**/obj/**", "**/*Tests*.cs"],
+    "rationale": "Blocking operations in component lifecycle methods can freeze rendering and hurt UX under load."
+  }
+]

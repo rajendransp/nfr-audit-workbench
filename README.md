@@ -87,6 +87,13 @@ Use a specific rule pack:
 python nfr_scan.py --path C:developmentmy-service --rules rules/dotnet_rules.json
 python nfr_scan.py --path C:developmentmy-frontend --rules rules/frontend_rules.json
 python nfr_scan.py --path C:developmentmy-api --rules rules/rest_api_rules.json
+python nfr_scan.py --path C:developmentmy-ui --rules rules/razor_rules.json
+```
+
+Run multiple packs together directly from CLI:
+
+```powershell
+python nfr_scan.py --path C:developmentmy-repo --rules rules/rest_api_rules.json rules/frontend_rules.json
 ```
 
 Run all packs together:

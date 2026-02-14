@@ -9,9 +9,13 @@ import nfr_scan
 class RuleHarnessTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        rules = json.loads(Path("rules/dotnet_rules.json").read_text(encoding="utf-8"))
+        rules = []
+        for path in ("rules/dotnet_rules.json", "rules/frontend_rules.json", "rules/rest_api_rules.json"):
+            rules.extend(json.loads(Path(path).read_text(encoding="utf-8-sig")))
         cls.rule_map = {r["id"]: r for r in rules}
-        cls.cases = json.loads(Path("tests/rule_harness_cases.json").read_text(encoding="utf-8"))
+        cls.cases = []
+        for path in ("tests/rule_harness_cases.json", "tests/rule_harness_cases_fe_api.json"):
+            cls.cases.extend(json.loads(Path(path).read_text(encoding="utf-8")))
 
     def test_rule_cases(self):
         for case in self.cases:

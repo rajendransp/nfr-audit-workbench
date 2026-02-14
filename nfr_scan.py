@@ -77,8 +77,9 @@ def parse_args():
     parser.add_argument("--path", default=".", help="Repository or service path to scan")
     parser.add_argument(
         "--rules",
-        default="rules/dotnet_rules.json",
-        help="Path to JSON rules file",
+        nargs="+",
+        default=["rules/dotnet_rules.json"],
+        help="One or more JSON rules files. Example: --rules rules/rest_api_rules.json rules/frontend_rules.json",
     )
     parser.add_argument(
         "--output-dir",
@@ -358,12 +359,33 @@ def apply_config_defaults(args, config, passed_flags):
     return args
 
 
-def load_rules(path):
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, list):
-        raise ValueError("Rules JSON must be a list")
-    return data
+def _normalize_rule_paths(path_spec):
+    if path_spec is None:
+        return []
+    if isinstance(path_spec, (list, tuple)):
+        out = []
+        for item in path_spec:
+            out.extend(_normalize_rule_paths(item))
+        return out
+    raw = str(path_spec).strip()
+    if not raw:
+        return []
+    parts = re.split(r"[;,]", raw)
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def load_rules(path_spec):
+    paths = _normalize_rule_paths(path_spec)
+    if not paths:
+        raise ValueError("At least one rules file is required")
+    combined = []
+    for path in paths:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            raise ValueError(f"Rules JSON must be a list: {path}")
+        combined.extend(data)
+    return combined
 
 
 def _severity_rank(value):
@@ -548,6 +570,10 @@ def _should_skip_match(rule, line_text):
         return True
     if rule.get("id") == "NFR-DOTNET-003" and not _is_blocking_dotnet_result_line(line_text):
         return True
+    if rule.get("id") == "NFR-FE-014":
+        # If a dependency array is present in the same effect call line, this is not the target case.
+        if re.search(r"\buseEffect\s*\([^\n]*,\s*\[", str(line_text or "")):
+            return True
     return False
 
 
@@ -722,6 +748,35 @@ def merge_rule_quality(existing_payload, new_scoreboard):
     }
 
 
+def build_rule_precision_trend(previous_quality_payload, current_run_scoreboard):
+    prev_rules = (previous_quality_payload or {}).get("rules", {})
+    if not isinstance(prev_rules, dict):
+        prev_rules = {}
+    out = {}
+    for rid, cur in (current_run_scoreboard or {}).items():
+        if not isinstance(cur, dict):
+            continue
+        prev = prev_rules.get(rid, {}) if isinstance(prev_rules.get(rid, {}), dict) else {}
+        prev_precision = float(prev.get("precision", 0.0) or 0.0)
+        cur_precision = float(cur.get("precision", 0.0) or 0.0)
+        delta = round(cur_precision - prev_precision, 4)
+        if delta > 0.01:
+            trend = "up"
+        elif delta < -0.01:
+            trend = "down"
+        else:
+            trend = "stable"
+        out[rid] = {
+            "previous_precision": round(prev_precision, 4),
+            "current_run_precision": round(cur_precision, 4),
+            "delta": delta,
+            "trend": trend,
+            "current_run_reviewed": int(cur.get("reviewed", 0) or 0),
+            "current_run_confirmed": int(cur.get("confirmed", 0) or 0),
+        }
+    return out
+
+
 def save_rule_quality(path, payload):
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -839,7 +894,10 @@ def _run_rg(path, rule, ignore_globs):
     for line in result.stdout.splitlines():
         if not line.strip():
             continue
-        entry = json.loads(line)
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
         if entry.get("type") != "match":
             continue
         data = entry["data"]
@@ -1894,6 +1952,7 @@ def write_json_report(summary_data, output_dir, roslyn_meta, scan_meta):
             "by_file_type": summary_data["by_file_type"],
             "throughput": summary_data.get("throughput", {}),
             "rule_quality": summary_data.get("rule_quality", {}),
+            "rule_precision_trend": summary_data.get("rule_precision_trend", {}),
         },
         "scan": scan_meta,
         "roslyn": roslyn_meta,
@@ -1994,6 +2053,22 @@ def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta):
                 reason = top_fp[0].get("reason", "unspecified")
                 count = top_fp[0].get("count", 0)
                 lines.append(f"  - top_fp_reason: {reason} ({count})")
+    else:
+        lines.append("- None")
+    lines.append("")
+
+    lines.append("## Rule Precision Trend (Current Run vs Historical)")
+    lines.append("")
+    trend = summary_data.get("rule_precision_trend", {})
+    if trend:
+        for rid, item in sorted(trend.items(), key=lambda kv: (kv[1].get("trend", "stable"), -kv[1].get("current_run_reviewed", 0), kv[0]))[:25]:
+            lines.append(
+                f"- {rid}: trend={item.get('trend', 'stable')}, "
+                f"prev={item.get('previous_precision', 0.0)}, "
+                f"current={item.get('current_run_precision', 0.0)}, "
+                f"delta={item.get('delta', 0.0)}, "
+                f"reviewed={item.get('current_run_reviewed', 0)}"
+            )
     else:
         lines.append("- None")
     lines.append("")
@@ -2230,7 +2305,8 @@ def main():
             log_progress(f"Loaded {len(ignore_globs)} ignore glob(s) from {args.ignore_file}")
 
         rules = load_rules(args.rules)
-        log_progress(f"Loaded {len(rules)} regex rule(s) from {args.rules}")
+        rule_paths = _normalize_rule_paths(args.rules)
+        log_progress(f"Loaded {len(rules)} regex rule(s) from {', '.join(rule_paths)}")
         if args.diff_base:
             changed_lines_by_file = load_git_diff_filter(
                 scan_path,
@@ -2557,6 +2633,7 @@ def main():
         "llm_latency_ms": llm_lat,
     }
     current_quality = summary_data.get("rule_quality", {})
+    summary_data["rule_precision_trend"] = build_rule_precision_trend(quality_history, current_quality)
     merged_quality = merge_rule_quality(quality_history, current_quality)
     save_rule_quality(quality_path, merged_quality)
     summary_data["rule_quality"] = merged_quality.get("rules", {})
