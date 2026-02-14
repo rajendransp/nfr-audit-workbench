@@ -10,6 +10,7 @@ var state = {
   columns: {
     severity: true,
     source: true,
+    trustTier: true,
     quickWin: true,
     effortBenefit: true,
     rule: true,
@@ -28,6 +29,7 @@ var state = {
 
 var severityEl = document.getElementById("severityFilter");
 var sourceEl = document.getElementById("sourceFilter");
+var trustTierEl = document.getElementById("trustTierFilter");
 var quickWinEl = document.getElementById("quickWinFilter");
 var fallbackEl = document.getElementById("fallbackFilter");
 var topLevelEl = document.getElementById("topLevelFilter");
@@ -56,7 +58,7 @@ var nextPageBtnEl = document.getElementById("nextPageBtn");
 var lastPageBtnEl = document.getElementById("lastPageBtn");
 state.pageSize = Number(pageSizeEl && pageSizeEl.value ? pageSizeEl.value : 20) || 20;
 
-var COLUMN_ORDER = ["severity","source","quickWin","effortBenefit","rule","topLevelCategory","subCategory","language","fileType","location","confidence","recommendation","snippet","patch","title"];
+var COLUMN_ORDER = ["severity","source","trustTier","quickWin","effortBenefit","rule","topLevelCategory","subCategory","language","fileType","location","confidence","recommendation","snippet","patch","title"];
 
 function setStatus(message) {
   statusEl.textContent = message;
@@ -92,6 +94,17 @@ function quickWinOf(f) {
 
 function fallbackOf(f) {
   return Boolean(get(f, ["llm_transport", "fallback_used"], false));
+}
+
+function trustTierOf(f) {
+  var explicitTier = String(f.trust_tier || "").trim().toLowerCase();
+  if (explicitTier) return explicitTier;
+  if (fallbackOf(f)) return "fallback";
+  if (Boolean(get(f, ["llm_transport", "fast_routed"], false))) return "fast_routed";
+  if (f.llm_review && typeof f.llm_review === "object") return "llm_confirmed";
+  if (String(f.source || "").toLowerCase() === "regex") return "regex_only";
+  if (String(f.source || "").toLowerCase() === "roslyn") return "roslyn";
+  return "unknown";
 }
 
 function effortOf(f) {
@@ -147,7 +160,8 @@ function renderCards(summary) {
     ["S1", get(summary, ["by_severity", "S1"], 0)],
     ["S2", get(summary, ["by_severity", "S2"], 0)],
     ["Regex", get(summary, ["by_source", "regex"], 0)],
-    ["Roslyn", get(summary, ["by_source", "roslyn"], 0)]
+    ["Roslyn", get(summary, ["by_source", "roslyn"], 0)],
+    ["Fallback", get(summary, ["by_trust_tier", "fallback"], 0)]
   ];
   var html = "";
   for (var i = 0; i < rows.length; i++) {
@@ -181,6 +195,7 @@ function rowTemplate(f, i) {
   var html = '<tr class="clickable" data-i="' + i + '">';
   html += td("severity", '<span class="badge ' + esc(cls) + '">' + esc(sev) + '</span>');
   html += td("source", esc(f.source || "unknown"));
+  html += td("trustTier", '<span class="trust-badge trust-' + esc(trustTierOf(f)) + '">' + esc(trustTierOf(f)) + '</span>');
   html += td("quickWin", quickWin ? '<span class="pill-yes">Yes</span>' : '<span class="pill-no">No</span>');
   html += td("effortBenefit", '<span class="mini">' + esc(effortBenefit) + '</span>');
   html += td("rule", esc(f.rule_id || "-"));
@@ -213,7 +228,7 @@ function applyColumnVisibility() {
 
 function renderColumnToggles() {
   var labels = {
-    severity:"Severity",source:"Source",quickWin:"Quick Win",effortBenefit:"Effort/Benefit",rule:"Rule",topLevelCategory:"Top Level",subCategory:"Sub Category",language:"Language",fileType:"File Type",location:"Location",confidence:"Confidence",recommendation:"Recommendation",snippet:"Snippet",patch:"Patch",title:"Title"
+    severity:"Severity",source:"Source",trustTier:"Trust Tier",quickWin:"Quick Win",effortBenefit:"Effort/Benefit",rule:"Rule",topLevelCategory:"Top Level",subCategory:"Sub Category",language:"Language",fileType:"File Type",location:"Location",confidence:"Confidence",recommendation:"Recommendation",snippet:"Snippet",patch:"Patch",title:"Title"
   };
   var html = "";
   for (var i = 0; i < COLUMN_ORDER.length; i++) {
@@ -264,6 +279,7 @@ function renderTable() {
 function sortValue(f, col) {
   if (col === "severity") return sevOf(f);
   if (col === "source") return String(f.source || "unknown");
+  if (col === "trustTier") return trustTierOf(f);
   if (col === "quickWin") return quickWinOf(f) ? "1" : "0";
   if (col === "effortBenefit") return effortOf(f) + "/" + benefitOf(f);
   if (col === "rule") return String(f.rule_id || "");
@@ -314,6 +330,7 @@ function includeByFilters(f) {
   var source = String(f.source || "unknown").toLowerCase();
   if (severityEl.value !== "ALL" && sev !== severityEl.value) return false;
   if (sourceEl.value !== "ALL" && source !== sourceEl.value) return false;
+  if (trustTierEl && trustTierEl.value !== "ALL" && trustTierOf(f) !== trustTierEl.value) return false;
 
   var qf = quickWinEl.value;
   if (qf === "YES" && !quickWinOf(f)) return false;
@@ -328,7 +345,7 @@ function includeByFilters(f) {
   if (!q) return true;
   var hay = [
     f.rule_id, f.rule_title, f.file, f.match_text, f.language, f.file_type,
-    f.top_level_category, f.sub_category,
+    f.top_level_category, f.sub_category, f.trust_tier, trustTierOf(f),
     get(f,["llm_review","title"],""), get(f,["llm_review","why"],""), get(f,["llm_review","recommendation"],"")
   ].join(" ").toLowerCase();
   return hay.indexOf(q) !== -1;
@@ -410,6 +427,7 @@ function showDetails(f) {
   content += detailBlock("Title", lr.title || f.rule_title || "-");
   content += detailBlock("Severity", sevOf(f));
   content += detailBlock("Rule", (f.rule_id || "-") + " (" + (f.source || "unknown") + ")");
+  content += detailBlock("Trust Tier", trustTierOf(f));
   content += detailBlock("Grouping", topLevelOf(f) + " / " + subCategoryOf(f));
   content += detailBlock("Language / File Type", (f.language || "unknown") + " / " + (f.file_type || "unknown"));
   content += detailBlock("Effort vs Benefit", effortOf(f) + " / " + benefitOf(f));
@@ -491,6 +509,7 @@ filePickerEl.addEventListener("change", function () { loadData(filePickerEl.valu
 uploadEl.addEventListener("change", function () { uploadFile(uploadEl.files[0]).catch(showError); });
 severityEl.addEventListener("change", applyFilters);
 sourceEl.addEventListener("change", applyFilters);
+if (trustTierEl) trustTierEl.addEventListener("change", applyFilters);
 quickWinEl.addEventListener("change", applyFilters);
 fallbackEl.addEventListener("change", applyFilters);
 topLevelEl.addEventListener("change", function () {

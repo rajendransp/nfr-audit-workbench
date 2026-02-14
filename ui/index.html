@@ -52,6 +52,18 @@
         </select>
       </div>
       <div class="field">
+        <label for="trustTierFilter">Trust Tier</label>
+        <select id="trustTierFilter">
+          <option value="ALL">All</option>
+          <option value="llm_confirmed">llm_confirmed</option>
+          <option value="fast_routed">fast_routed</option>
+          <option value="fallback">fallback</option>
+          <option value="regex_only">regex_only</option>
+          <option value="roslyn">roslyn</option>
+          <option value="unknown">unknown</option>
+        </select>
+      </div>
+      <div class="field">
         <label for="quickWinFilter">Quick Win</label>
         <select id="quickWinFilter">
           <option value="ALL">All</option>
@@ -114,6 +126,7 @@
               <tr>
                 <th data-col="severity">Severity</th>
                 <th data-col="source">Source</th>
+                <th data-col="trustTier">Trust Tier</th>
                 <th data-col="quickWin">Quick Win</th>
                 <th data-col="effortBenefit">Effort vs Benefit</th>
                 <th data-col="rule">Rule</th>

@@ -1,0 +1,30 @@
+[
+  {
+    "name": "dotnet_003_matches_task_result",
+    "rule_id": "NFR-DOTNET-003",
+    "file": "SampleA.cs",
+    "content": "using System.Threading.Tasks;\npublic class A { public void Run(Task<int> userTask) { var x = userTask.Result; } }\n",
+    "expected_match_lines": [2]
+  },
+  {
+    "name": "dotnet_003_ignores_operation_result_property",
+    "rule_id": "NFR-DOTNET-003",
+    "file": "SampleB.cs",
+    "content": "public class OperationResult<T> { public T Result { get; set; } }\npublic class B { public bool Run(OperationResult<bool> r) { return r.Result; } }\n",
+    "expected_match_lines": []
+  },
+  {
+    "name": "dotnet_003_ignores_commented_line",
+    "rule_id": "NFR-DOTNET-003",
+    "file": "SampleC.cs",
+    "content": "public class C { public void Run(System.Threading.Tasks.Task<int> t) { // var x = t.Result; } }\n",
+    "expected_match_lines": []
+  },
+  {
+    "name": "dotnet_013_matches_cancellationtoken_none",
+    "rule_id": "NFR-DOTNET-013",
+    "file": "SampleD.cs",
+    "content": "using System.Threading;\npublic class D { public void Run() { var t = CancellationToken.None; } }\n",
+    "expected_match_lines": [2]
+  }
+]

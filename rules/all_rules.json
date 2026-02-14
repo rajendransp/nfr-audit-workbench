@@ -1,4 +1,4 @@
-[
+﻿[
     {
         "id":  "NFR-DOTNET-001",
         "title":  "HttpClient call without CancellationToken",
@@ -42,7 +42,9 @@
         "top_level_category":  "dotnet",
         "sub_category":  "concurrency",
         "severity":  "S1",
-        "pattern":  "(\\.Result\\b(?!\\s*=)|\\.Wait\\s*\\(|GetAwaiter\\s*\\(\\)\\.GetResult\\s*\\(|\\bTask\\.Wait(All|Any)\\s*\\()",
+        "confidence_hint":  0.5,
+        "pattern":  "(\\b[A-Za-z_][A-Za-z0-9_]*(Task|task|ValueTask|valuetask)\\s*\\.\\s*Result\\b|\\b[A-Za-z_][A-Za-z0-9_]*Async\\s*\\([^)]*\\)\\s*\\.\\s*Result\\b|\\.Wait\\s*\\(|GetAwaiter\\s*\\(\\)\\.GetResult\\s*\\(|\\bTask\\.Wait(All|Any)\\s*\\()",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.cs"
                           ],
@@ -50,7 +52,7 @@
                               "**/bin/**",
                               "**/obj/**"
                           ],
-        "rationale":  "Blocking waits can cause deadlocks and thread pool starvation."
+        "rationale":  "Blocking waits can cause deadlocks and thread pool starvation. Pattern intentionally targets task-like .Result usage to avoid domain Result-property false positives."
     },
     {
         "id":  "NFR-DOTNET-004",
@@ -59,6 +61,7 @@
         "top_level_category":  "dotnet",
         "sub_category":  "performance",
         "severity":  "S2",
+        "confidence_hint":  0.95,
         "pattern":  "\\bThread\\.Sleep\\s*\\(",
         "include_globs":  [
                               "*.cs"
@@ -76,6 +79,7 @@
         "top_level_category":  "dotnet",
         "sub_category":  "loading",
         "severity":  "S2",
+        "confidence_hint":  0.9,
         "pattern":  "\\bnew\\s+HttpClient\\s*\\(",
         "include_globs":  [
                               "*.cs"
@@ -184,6 +188,7 @@
         "top_level_category":  "dotnet",
         "sub_category":  "concurrency",
         "severity":  "S1",
+        "confidence_hint":  0.95,
         "pattern":  "\\basync\\s+void\\s+[A-Za-z_][A-Za-z0-9_]*\\s*\\(",
         "include_globs":  [
                               "*.cs"
@@ -220,6 +225,7 @@
         "top_level_category":  "dotnet",
         "sub_category":  "concurrency",
         "severity":  "S2",
+        "confidence_hint":  0.75,
         "pattern":  "\\bCancellationToken\\.None\\b",
         "include_globs":  [
                               "*.cs"
@@ -290,6 +296,7 @@
         "top_level_category":  "dotnet",
         "sub_category":  "loading",
         "severity":  "S3",
+        "confidence_hint":  0.4,
         "pattern":  "\\b(_db\\w*|dbContext|context)\\b[\\s\\S]{0,240}\\.(ToArrayAsync|ToListAsync|ToArray|ToList)\\s*\\(",
         "include_globs":  [
                               "*.cs"
@@ -361,7 +368,8 @@
         "top_level_category":  "front_end",
         "sub_category":  "concurrency",
         "severity":  "S2",
-        "pattern":  "\\bfetch\\s*\\((?![^\\)]*\\bsignal\\s*:)[^\\)]*\\)",
+        "pattern":  "\\bfetch\\s*\\(\\s*[^,\\n\\)]*(?:,\\s*\\{(?![^}]*\\bsignal\\b)[^}]*\\})?\\s*\\)",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.js",
                               "*.jsx",
@@ -384,7 +392,8 @@
         "top_level_category":  "front_end",
         "sub_category":  "loading",
         "severity":  "S2",
-        "pattern":  "\\baxios\\.(get|post|put|delete|request)\\s*\\((?![^\\)]*\\btimeout\\b)[^\\)]*\\)",
+        "pattern":  "\\baxios\\.(get|post|put|delete|request)\\s*\\((?![^\\)]*\\btimeout\\b)(?![^\\)]*\\baxiosInstance\\b)[^\\)]*\\)",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.js",
                               "*.jsx",
@@ -407,7 +416,8 @@
         "top_level_category":  "front_end",
         "sub_category":  "concurrency",
         "severity":  "S2",
-        "pattern":  "\\bsetInterval\\s*\\(",
+        "pattern":  "\\buseEffect\\s*\\(\\s*\\(\\s*=\u003e[\\s\\S]{0,260}\\bsetInterval\\s*\\((?![\\s\\S]{0,260}\\bclearInterval\\s*\\()",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.js",
                               "*.jsx",
@@ -430,7 +440,8 @@
         "top_level_category":  "front_end",
         "sub_category":  "concurrency",
         "severity":  "S2",
-        "pattern":  "\\.then\\s*\\([^\\)]*\\)(?!\\s*\\.catch\\s*\\()",
+        "pattern":  "\\.then\\s*\\(\\s*[^,\\)]{1,200}\\s*\\)(?!\\s*\\.catch\\s*\\()",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.js",
                               "*.jsx",
@@ -453,7 +464,8 @@
         "top_level_category":  "front_end",
         "sub_category":  "loading",
         "severity":  "S1",
-        "pattern":  "\\bdangerouslySetInnerHTML\\b|\\binnerHTML\\s*=",
+        "pattern":  "\\bdangerouslySetInnerHTML\\b|\\b[A-Za-z_$][A-Za-z0-9_$]*\\.innerHTML\\s*=",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.js",
                               "*.jsx",
@@ -522,7 +534,8 @@
         "top_level_category":  "front_end",
         "sub_category":  "loading",
         "severity":  "S3",
-        "pattern":  "\\b(Route|createBrowserRouter|router)\\b[\\s\\S]{0,300}\\b(component|element)\\s*:\\s*[A-Z][A-Za-z0-9_]*",
+        "pattern":  "\\b(createBrowserRouter|createRoutesFromElements|Route)\\b[\\s\\S]{0,360}\\belement\\s*:\\s*\u003c\\s*[A-Z][A-Za-z0-9_]*\\b(?![\\s\\S]{0,120}\\blazy\\s*\\(|\\bSuspense\\b|\\bimport\\s*\\()",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.js",
                               "*.jsx",
@@ -545,7 +558,8 @@
         "top_level_category":  "front_end",
         "sub_category":  "loading",
         "severity":  "S3",
-        "pattern":  "\u003cimg\\b(?![^\u003e]*\\bloading=\\\"lazy\\\")",
+        "pattern":  "\u003cimg\\b(?![^\u003e]*\\bloading=\\\"lazy\\\")(?![^\u003e]*\\bfetchpriority=\\\"high\\\")",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.html",
                               "*.jsx",
@@ -568,7 +582,8 @@
         "top_level_category":  "front_end",
         "sub_category":  "loading",
         "severity":  "S3",
-        "pattern":  "\\bon(Change|Input|KeyUp)\\s*=\\s*\\{[^\\}]{0,200}(fetch|axios|dispatch|setState)",
+        "pattern":  "\\bon(Change|Input|KeyUp)\\s*=\\s*\\{(?![^\\}]{0,200}\\b(debounce|throttle)\\b)[^\\}]{0,220}(fetch|axios|dispatch|setState)",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.jsx",
                               "*.tsx",
@@ -591,6 +606,7 @@
         "sub_category":  "performance",
         "severity":  "S4",
         "pattern":  "\\bconsole\\.(log|debug|info|trace)\\s*\\(",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.js",
                               "*.jsx",
@@ -616,6 +632,7 @@
         "sub_category":  "performance",
         "severity":  "S3",
         "pattern":  "\\b(for\\s*\\(|while\\s*\\()[\\s\\S]{0,300}\\b(localStorage|sessionStorage)\\.(getItem|setItem)\\s*\\(",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.js",
                               "*.jsx",
@@ -638,7 +655,8 @@
         "top_level_category":  "rest_api",
         "sub_category":  "concurrency",
         "severity":  "S2",
-        "pattern":  "\\b(public|private|internal|protected)\\s+(async\\s+)?Task\u003c[^\u003e]+\u003e\\s+[A-Za-z0-9_]+\\s*\\((?![^\\)]*\\bCancellationToken\\b)[^\\)]*\\)",
+        "pattern":  "\\[(Http(Get|Post|Put|Delete|Patch)|Route)\\b[^\\]]*\\][\\s\\S]{0,120}\\b(public|internal|protected)\\s+(async\\s+)?Task(\u003c[^\u003e]+\u003e)?\\s+[A-Za-z0-9_]+\\s*\\((?![^\\)]*\\bCancellationToken\\b)[^\\)]*\\)",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.cs"
                           ],
@@ -675,7 +693,8 @@
         "top_level_category":  "rest_api",
         "sub_category":  "loading",
         "severity":  "S2",
-        "pattern":  "\\b(IActionResult|ActionResult\u003c|IEnumerable\u003c|List\u003c)\\b[\\s\\S]{0,250}\\b(Get|List|Search|Query)\\b[\\s\\S]{0,400}\\b(Ok\\s*\\(|return\\s+[^;]*)(?![\\s\\S]{0,200}\\b(skip|take|page|pageSize|limit|offset)\\b)",
+        "pattern":  "\\[HttpGet[^\\]]*\\][\\s\\S]{0,320}\\b(public|internal|protected)\\s+(async\\s+)?Task\\s*\u003c\\s*(IActionResult|ActionResult\u003c[^\u003e]+\u003e)\\s*\u003e\\s+[A-Za-z0-9_]*(Get|List|Search|Query)[A-Za-z0-9_]*\\s*\\([^\\)]*\\)[\\s\\S]{0,520}\\breturn\\s+Ok\\s*\\((?![^;]{0,220}\\b(skip|take|page|pageSize|limit|offset)\\b)[^;]*\\)",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.cs"
                           ],
@@ -711,7 +730,8 @@
         "top_level_category":  "rest_api",
         "sub_category":  "loading",
         "severity":  "S3",
-        "pattern":  "\\[HttpGet[^\\]]*\\][\\s\\S]{0,250}(?!\\[ResponseCache\\b)(public|private|internal)\\s+(async\\s+)?Task",
+        "pattern":  "\\[HttpGet[^\\]]*\\](?![\\s\\S]{0,220}\\[(ResponseCache|OutputCache)\\b)[\\s\\S]{0,260}\\b(public|internal|protected)\\s+(async\\s+)?Task",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.cs"
                           ],
@@ -729,7 +749,8 @@
         "top_level_category":  "rest_api",
         "sub_category":  "loading",
         "severity":  "S3",
-        "pattern":  "\\breturn\\s+Ok\\s*\\(\\s*[A-Za-z0-9_]+\\s*\\)\\s*;",
+        "pattern":  "\\breturn\\s+Ok\\s*\\(\\s*(await\\s+)?(_db\\w*|dbContext|context)\\.[^;]{0,180}\\)\\s*;",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.cs"
                           ],
@@ -747,7 +768,8 @@
         "top_level_category":  "rest_api",
         "sub_category":  "loading",
         "severity":  "S2",
-        "pattern":  "\\bAddHttpClient\\b[\\s\\S]{0,240}(?!\\bTimeout\\b)(?!\\bAddPolicyHandler\\b)",
+        "pattern":  "\\bAddHttpClient\\b[\\s\\S]{0,260}(?!\\b(Timeout|SetHandlerLifetime|ConfigureHttpClient|AddPolicyHandler)\\b)",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.cs"
                           ],
@@ -765,7 +787,8 @@
         "top_level_category":  "rest_api",
         "sub_category":  "loading",
         "severity":  "S2",
-        "pattern":  "\\b(WaitAndRetry|RetryAsync|Retry)\\b\\s*\\(",
+        "pattern":  "\\b(Retry|RetryAsync)\\s*\\(\\s*\\d+\\s*\\)|\\bWaitAndRetry(Async)?\\s*\\(\\s*\\d+\\s*,\\s*[^\\)]*TimeSpan\\.From(Seconds|Milliseconds)\\s*\\(\\s*\\d+\\s*\\)",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.cs"
                           ],
@@ -819,11 +842,11 @@
         "top_level_category":  "rest_api",
         "sub_category":  "loading",
         "severity":  "S2",
-        "pattern":  "\\b(UseEndpoints|MapControllers|app\\.Run)\\b(?![\\s\\S]{0,300}\\bUseRateLimiter\\b)",
+        "pattern":  "\\b(MapControllers|UseEndpoints)\\b(?![\\s\\S]{0,320}\\bUseRateLimiter\\b)",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "Program.cs",
-                              "Startup.cs",
-                              "*.cs"
+                              "Startup.cs"
                           ],
         "exclude_globs":  [
                               "**/bin/**",
@@ -839,7 +862,8 @@
         "top_level_category":  "rest_api",
         "sub_category":  "concurrency",
         "severity":  "S2",
-        "pattern":  "\\b(Request\\.Body|StreamReader\\s*\\([^\\)]*Request\\.Body[^\\)]*\\))[\\s\\S]{0,200}\\b(ReadToEnd\\s*\\(|Read\\s*\\()",
+        "pattern":  "\\b(Request\\.Body|StreamReader\\s*\\([^\\)]*Request\\.Body[^\\)]*\\))[\\s\\S]{0,220}\\b(ReadToEnd\\s*\\(|Read\\s*\\((?!Async))",
+        "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.cs"
                           ],

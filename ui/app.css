@@ -64,7 +64,7 @@ code { font-family: "IBM Plex Mono", monospace; font-size: .85rem; }
 }
 .cards {
   display: grid;
-  grid-template-columns: repeat(6, minmax(130px, 1fr));
+  grid-template-columns: repeat(7, minmax(120px, 1fr));
   gap: 10px;
 }
 .card {
@@ -123,6 +123,21 @@ tr.clickable:hover { background: #f4efe6; }
   font-size: .75rem;
   color: #fff;
 }
+.trust-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .72rem;
+  border: 1px solid #d8c9b3;
+  background: #f7f2e8;
+}
+.trust-llm_confirmed { color: #0b6f44; border-color: #9cd6b8; background: #e9f7ef; }
+.trust-fast_routed { color: #0a5d8f; border-color: #8cc7ef; background: #e7f3fc; }
+.trust-fallback { color: #8a1c1c; border-color: #efb0b0; background: #fdeeee; }
+.trust-regex_only { color: #6b4f00; border-color: #e6ce82; background: #fff8e6; }
+.trust-roslyn { color: #5e3a95; border-color: #cbb6e8; background: #f3ebff; }
+.trust-unknown { color: #4d5b68; }
 .s1 { background: var(--s1); }
 .s2 { background: var(--s2); }
 .s3 { background: var(--s3); }

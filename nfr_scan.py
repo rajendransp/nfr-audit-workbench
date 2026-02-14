@@ -174,6 +174,52 @@ def parse_args():
         help="Auto-tune llm-workers: reduce on timeout spikes, slowly increase when stable.",
     )
     parser.add_argument(
+        "--fast-high-confidence-routing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Fast mode: auto-confirm high-confidence regex findings without LLM.",
+    )
+    parser.add_argument(
+        "--high-confidence-threshold",
+        type=float,
+        default=0.9,
+        help="Minimum rule confidence_hint for fast routing.",
+    )
+    parser.add_argument(
+        "--high-confidence-max-severity",
+        default="S2",
+        help="Highest severity eligible for fast routing (S1/S2/S3/S4).",
+    )
+    parser.add_argument(
+        "--auto-demote-noisy-rules",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Demote noisy rules in LLM prioritization using historical quality stats.",
+    )
+    parser.add_argument(
+        "--rule-quality-file",
+        default="rule_quality.json",
+        help="Rule quality scoreboard file (relative to output dir unless absolute path).",
+    )
+    parser.add_argument(
+        "--noisy-rule-min-reviewed",
+        type=int,
+        default=20,
+        help="Minimum historical reviewed count before a rule can be auto-demoted.",
+    )
+    parser.add_argument(
+        "--noisy-rule-max-precision",
+        type=float,
+        default=0.25,
+        help="Auto-demote when historical precision is at or below this threshold.",
+    )
+    parser.add_argument(
+        "--noisy-rule-max-fallback-rate",
+        type=float,
+        default=0.2,
+        help="Auto-demote when historical fallback rate is at or above this threshold.",
+    )
+    parser.add_argument(
         "--resume-queue",
         default="",
         help="Resume an existing run from findings_queue__*.json",
@@ -231,6 +277,41 @@ def parse_args():
         default=".nfrignore",
         help="Ignore file path (relative to --path by default). Set empty to disable.",
     )
+    parser.add_argument(
+        "--diff-base",
+        default="",
+        help="Optional git base ref for diff/PR mode. When set, only changed files/lines are scanned.",
+    )
+    parser.add_argument(
+        "--diff-head",
+        default="HEAD",
+        help="Optional git head ref for diff/PR mode (default: HEAD).",
+    )
+    parser.add_argument(
+        "--diff-files-only",
+        action="store_true",
+        help="Diff mode scans all lines in changed files (instead of changed lines only).",
+    )
+    parser.add_argument(
+        "--ci-mode",
+        default="off",
+        help="CI policy mode: off|warn|soft-fail|hard-fail",
+    )
+    parser.add_argument(
+        "--ci-max-total",
+        type=int,
+        default=-1,
+        help="CI threshold for confirmed findings count across selected trust tiers (-1 disables).",
+    )
+    parser.add_argument("--ci-threshold-s1", type=int, default=-1, help="CI threshold for S1 findings (-1 disables).")
+    parser.add_argument("--ci-threshold-s2", type=int, default=-1, help="CI threshold for S2 findings (-1 disables).")
+    parser.add_argument("--ci-threshold-s3", type=int, default=-1, help="CI threshold for S3 findings (-1 disables).")
+    parser.add_argument("--ci-threshold-s4", type=int, default=-1, help="CI threshold for S4 findings (-1 disables).")
+    parser.add_argument(
+        "--ci-count-trust-tiers",
+        default="llm_confirmed,fast_routed,fallback,regex_only,roslyn",
+        help="Comma-separated trust tiers to include in CI counting.",
+    )
     args = parser.parse_args()
     config = load_scan_config(args.config)
     passed_flags = get_passed_cli_flags(sys.argv)
@@ -283,6 +364,33 @@ def load_rules(path):
     if not isinstance(data, list):
         raise ValueError("Rules JSON must be a list")
     return data
+
+
+def _severity_rank(value):
+    sev = str(value or "S3").upper()
+    return SEVERITY_ORDER.get(sev, SEVERITY_ORDER["S3"])
+
+
+def _severity_at_or_above(a, b):
+    return _severity_rank(a) <= _severity_rank(b)
+
+
+def _degrade_severity(value):
+    sev = str(value or "S3").upper()
+    if sev == "S1":
+        return "S2"
+    if sev == "S2":
+        return "S3"
+    if sev == "S3":
+        return "S4"
+    return "S4"
+
+
+def _coerce_float(value, default):
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
 
 
 def _normalize_ignore_pattern(raw):
@@ -344,6 +452,362 @@ def _is_ignored_path(rel_path, ignore_globs):
     return any(fnmatch(rel_path, g) for g in ignore_globs)
 
 
+def _normalize_rel_path(path, root):
+    try:
+        return Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
+    except Exception:
+        try:
+            return Path(path).as_posix()
+        except Exception:
+            return str(path).replace("\\", "/")
+
+
+def _parse_added_ranges_from_hunk(line):
+    m = re.search(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
+    if not m:
+        return []
+    start = int(m.group(1))
+    count = int(m.group(2) or "1")
+    if count <= 0:
+        return []
+    return list(range(start, start + count))
+
+
+def load_git_diff_filter(scan_path, diff_base, diff_head="HEAD", files_only=False):
+    base = str(diff_base or "").strip()
+    if not base:
+        return {}
+    head = str(diff_head or "HEAD").strip()
+    if not shutil.which("git"):
+        log_progress("Diff mode requested, but git was not found in PATH. Proceeding with full scan.")
+        return {}
+
+    cmd = [
+        "git",
+        "-C",
+        str(scan_path),
+        "diff",
+        "--unified=0",
+        "--no-color",
+        "--no-renames",
+        f"{base}...{head}",
+        "--",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+    if result.returncode != 0:
+        log_progress(
+            f"Diff mode requested, but git diff failed for {base}...{head}. "
+            f"Proceeding with full scan. Error: {(result.stderr or '').strip()}"
+        )
+        return {}
+
+    changed = {}
+    current_file = None
+    for raw in result.stdout.splitlines():
+        if raw.startswith("+++ b/"):
+            rel = raw[6:].strip().replace("\\", "/")
+            if rel == "/dev/null":
+                current_file = None
+                continue
+            current_file = rel
+            if current_file not in changed:
+                changed[current_file] = set()
+            continue
+        if current_file is None:
+            continue
+        if files_only:
+            changed[current_file] = set()
+            continue
+        if raw.startswith("@@"):
+            for ln in _parse_added_ranges_from_hunk(raw):
+                changed[current_file].add(ln)
+    return changed
+
+
+def _is_comment_only_line(line_text):
+    text = str(line_text or "").lstrip()
+    if not text:
+        return False
+    return text.startswith("//") or text.startswith("/*") or text.startswith("*") or text.startswith("*/")
+
+
+def _is_blocking_dotnet_result_line(line_text):
+    text = str(line_text or "")
+    if ".Result" not in text:
+        return True
+    if ".Wait(" in text or "GetAwaiter().GetResult()" in text or "Task.WaitAll(" in text or "Task.WaitAny(" in text:
+        return True
+    # Only keep .Result usage that is task-like; this avoids OperationResult<T>.Result false positives.
+    task_like_result = re.search(r"\b[A-Za-z_][A-Za-z0-9_]*(Task|task|ValueTask|valuetask)\s*\.\s*Result\b", text)
+    async_call_result = re.search(r"\b[A-Za-z_][A-Za-z0-9_]*Async\s*\([^)]*\)\s*\.\s*Result\b", text)
+    return bool(task_like_result or async_call_result)
+
+
+def _should_skip_match(rule, line_text):
+    if rule.get("ignore_comment_lines", False) and _is_comment_only_line(line_text):
+        return True
+    if rule.get("id") == "NFR-DOTNET-003" and not _is_blocking_dotnet_result_line(line_text):
+        return True
+    return False
+
+
+def _match_in_diff_scope(match_item, scan_root, changed_lines_by_file):
+    if not changed_lines_by_file:
+        return True
+    rel = _normalize_rel_path(match_item.get("file", ""), scan_root)
+    if rel not in changed_lines_by_file:
+        return False
+    touched_lines = changed_lines_by_file.get(rel, set())
+    if not touched_lines:
+        return True
+    return int(match_item.get("line", 1) or 1) in touched_lines
+
+
+def apply_contextual_overrides(findings):
+    out = []
+    for finding in findings:
+        item = dict(finding)
+        rid = str(item.get("rule_id", ""))
+        if rid != "NFR-DOTNET-013":
+            out.append(item)
+            continue
+        path_l = str(item.get("file", "")).lower().replace("\\", "/")
+        likely_helper = any(
+            token in path_l
+            for token in ("/test/", "/tests/", "/spec/", "/benchmark/", "/samples/", "/example/", "/helpers/", "helper")
+        )
+        if likely_helper and str(item.get("default_severity", "S3")).upper() in {"S1", "S2"}:
+            item["default_severity"] = _degrade_severity(item.get("default_severity", "S2"))
+            item["context_override"] = "helper_or_test_path"
+            item["context_override_note"] = "Severity lowered in helper/test-like path."
+        out.append(item)
+    return out
+
+
+def _resolve_quality_path(rule_quality_file, output_dir):
+    p = Path(rule_quality_file or "rule_quality.json")
+    if not p.is_absolute():
+        p = Path(output_dir) / p
+    return p
+
+
+def load_rule_quality(path):
+    p = Path(path)
+    if not p.exists() or not p.is_file():
+        return {"rules": {}, "meta": {}}
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8", errors="ignore"))
+        if not isinstance(payload, dict):
+            return {"rules": {}, "meta": {}}
+        rules = payload.get("rules", {})
+        meta = payload.get("meta", {})
+        if not isinstance(rules, dict):
+            rules = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        return {"rules": rules, "meta": meta}
+    except Exception:
+        return {"rules": {}, "meta": {}}
+
+
+def _extract_false_positive_reason(item):
+    review = item.get("llm_review", {}) or {}
+    why = str(review.get("why", "") or "").strip()
+    if not why:
+        return "unspecified"
+    first = why.split(".")[0].strip()
+    first = re.sub(r"\s+", " ", first)
+    if len(first) > 120:
+        first = first[:120].rstrip() + "..."
+    return first or "unspecified"
+
+
+def build_rule_quality_scoreboard(reviewed):
+    grouped = {}
+    for item in reviewed:
+        rid = str(item.get("rule_id", "unknown"))
+        if rid not in grouped:
+            grouped[rid] = {
+                "reviewed": 0,
+                "confirmed": 0,
+                "fallback_count": 0,
+                "timeout_like_count": 0,
+                "false_positive_reasons": Counter(),
+            }
+        g = grouped[rid]
+        g["reviewed"] += 1
+        is_issue = bool((item.get("llm_review", {}) or {}).get("isIssue", False))
+        if is_issue:
+            g["confirmed"] += 1
+        else:
+            g["false_positive_reasons"][_extract_false_positive_reason(item)] += 1
+        t = item.get("llm_transport", {}) or {}
+        if bool(t.get("fallback_used", False)):
+            g["fallback_count"] += 1
+        kind = str(t.get("error_kind", ""))
+        if kind in {"timeout", "connection_error"} or kind.startswith("http_5") or kind == "http_429":
+            g["timeout_like_count"] += 1
+
+    scoreboard = {}
+    for rid, g in grouped.items():
+        reviewed_count = int(g["reviewed"])
+        confirmed_count = int(g["confirmed"])
+        fallback_count = int(g["fallback_count"])
+        timeout_count = int(g["timeout_like_count"])
+        precision = (confirmed_count / reviewed_count) if reviewed_count else 0.0
+        fallback_rate = (fallback_count / reviewed_count) if reviewed_count else 0.0
+        timeout_rate = (timeout_count / reviewed_count) if reviewed_count else 0.0
+        top_fp = [
+            {"reason": reason, "count": count}
+            for reason, count in g["false_positive_reasons"].most_common(5)
+        ]
+        scoreboard[rid] = {
+            "reviewed": reviewed_count,
+            "confirmed": confirmed_count,
+            "precision": round(precision, 4),
+            "fallback_count": fallback_count,
+            "fallback_rate": round(fallback_rate, 4),
+            "timeout_like_count": timeout_count,
+            "timeout_like_rate": round(timeout_rate, 4),
+            "top_false_positive_reasons": top_fp,
+        }
+    return scoreboard
+
+
+def merge_rule_quality(existing_payload, new_scoreboard):
+    existing = dict(existing_payload or {})
+    old_rules = existing.get("rules", {}) if isinstance(existing.get("rules", {}), dict) else {}
+    merged = {}
+    for rid in sorted(set(old_rules.keys()) | set(new_scoreboard.keys())):
+        old = old_rules.get(rid, {}) if isinstance(old_rules.get(rid, {}), dict) else {}
+        new = new_scoreboard.get(rid, {}) if isinstance(new_scoreboard.get(rid, {}), dict) else {}
+        old_reviewed = int(old.get("reviewed", 0) or 0)
+        old_confirmed = int(old.get("confirmed", 0) or 0)
+        old_fallback = int(old.get("fallback_count", 0) or 0)
+        old_timeout = int(old.get("timeout_like_count", 0) or 0)
+        new_reviewed = int(new.get("reviewed", 0) or 0)
+        new_confirmed = int(new.get("confirmed", 0) or 0)
+        new_fallback = int(new.get("fallback_count", 0) or 0)
+        new_timeout = int(new.get("timeout_like_count", 0) or 0)
+        total_reviewed = old_reviewed + new_reviewed
+        total_confirmed = old_confirmed + new_confirmed
+        total_fallback = old_fallback + new_fallback
+        total_timeout = old_timeout + new_timeout
+        fp_counter = Counter()
+        for item in old.get("top_false_positive_reasons", []) or []:
+            if isinstance(item, dict) and item.get("reason"):
+                fp_counter[str(item["reason"])] += int(item.get("count", 0) or 0)
+        for item in new.get("top_false_positive_reasons", []) or []:
+            if isinstance(item, dict) and item.get("reason"):
+                fp_counter[str(item["reason"])] += int(item.get("count", 0) or 0)
+        merged[rid] = {
+            "reviewed": total_reviewed,
+            "confirmed": total_confirmed,
+            "precision": round((total_confirmed / total_reviewed) if total_reviewed else 0.0, 4),
+            "fallback_count": total_fallback,
+            "fallback_rate": round((total_fallback / total_reviewed) if total_reviewed else 0.0, 4),
+            "timeout_like_count": total_timeout,
+            "timeout_like_rate": round((total_timeout / total_reviewed) if total_reviewed else 0.0, 4),
+            "top_false_positive_reasons": [
+                {"reason": reason, "count": count}
+                for reason, count in fp_counter.most_common(5)
+            ],
+        }
+    return {
+        "meta": {
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "rule_count": len(merged),
+        },
+        "rules": merged,
+    }
+
+
+def save_rule_quality(path, payload):
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def derive_noisy_rules(rule_quality_payload, min_reviewed, max_precision, max_fallback_rate):
+    noisy = set()
+    rules = (rule_quality_payload or {}).get("rules", {})
+    if not isinstance(rules, dict):
+        return noisy
+    for rid, stats in rules.items():
+        if not isinstance(stats, dict):
+            continue
+        reviewed = int(stats.get("reviewed", 0) or 0)
+        if reviewed < int(min_reviewed):
+            continue
+        precision = float(stats.get("precision", 0.0) or 0.0)
+        fallback_rate = float(stats.get("fallback_rate", 0.0) or 0.0)
+        if precision <= float(max_precision) or fallback_rate >= float(max_fallback_rate):
+            noisy.add(str(rid))
+    return noisy
+
+
+def build_fast_routed_review(finding):
+    confidence = finding.get("confidence_hint")
+    try:
+        confidence = float(confidence)
+    except Exception:
+        confidence = 0.9
+    out = dict(finding)
+    out["llm_review"] = {
+        "isIssue": True,
+        "severity": str(finding.get("default_severity", "S3")).upper(),
+        "confidence": max(0.0, min(1.0, confidence)),
+        "title": f"{finding.get('rule_title', finding.get('rule_id', 'Rule'))} (fast-routed)",
+        "why": "Auto-confirmed using high-confidence rule routing.",
+        "recommendation": str(finding.get("rationale", "Apply recommended fix for this rule.")),
+        "effort": "medium",
+        "benefit": "medium",
+        "quick_win": False,
+        "testing_notes": ["Run targeted tests for impacted code path after applying fix."],
+        "patch": "unknown",
+    }
+    out["llm_transport"] = {
+        "attempts": 0,
+        "attempts_allowed": 0,
+        "fallback_used": False,
+        "error_kind": "",
+        "from_cache": False,
+        "fast_routed": True,
+        "recovered_after_retry": False,
+        "elapsed_ms": 0.0,
+    }
+    out["llm_error_kind"] = ""
+    out["llm_attempts"] = 0
+    out["llm_retried"] = False
+    return out
+
+
+def trust_tier_of(item):
+    transport = item.get("llm_transport", {}) or {}
+    if bool(transport.get("fallback_used", False)):
+        return "fallback"
+    if bool(transport.get("fast_routed", False)):
+        return "fast_routed"
+    has_llm = isinstance(item.get("llm_review"), dict) and bool(item.get("llm_review"))
+    if has_llm:
+        return "llm_confirmed"
+    source = str(item.get("source", "unknown")).lower()
+    if source == "regex":
+        return "regex_only"
+    if source == "roslyn":
+        return "roslyn"
+    return "unknown"
+
+
+def _parse_csv_set(text):
+    out = set()
+    for part in str(text or "").split(","):
+        token = part.strip().lower()
+        if token:
+            out.add(token)
+    return out
+
+
 def _run_rg(path, rule, ignore_globs):
     rg_path = shutil.which("rg")
     if not rg_path:
@@ -379,12 +843,15 @@ def _run_rg(path, rule, ignore_globs):
         if entry.get("type") != "match":
             continue
         data = entry["data"]
+        line_text = data["lines"]["text"].rstrip("\n")
+        if _should_skip_match(rule, line_text):
+            continue
         matches.append(
             {
                 "file": data["path"]["text"],
                 "line": data["line_number"],
                 "column": data["submatches"][0]["start"] + 1 if data.get("submatches") else 1,
-                "match_text": data["lines"]["text"].rstrip("\n"),
+                "match_text": line_text,
             }
         )
     return matches
@@ -430,6 +897,8 @@ def _run_regex_fallback(path, rule, ignore_globs):
             if line_end == -1:
                 line_end = len(text)
             line_text = text[line_start:line_end]
+            if _should_skip_match(rule, line_text):
+                continue
             col = (m.start() - line_start) + 1
             matches.append(
                 {
@@ -551,7 +1020,15 @@ def _project_name_from_scan_path(scan_path):
     return _safe_name(base or "project")
 
 
-def pre_scan(scan_path, rules, context_lines, max_findings, ignore_globs, regex_workers=1):
+def pre_scan(
+    scan_path,
+    rules,
+    context_lines,
+    max_findings,
+    ignore_globs,
+    regex_workers=1,
+    changed_lines_by_file=None,
+):
     all_findings = []
     cache = {}
     total_rules = len(rules)
@@ -587,6 +1064,8 @@ def pre_scan(scan_path, rules, context_lines, max_findings, ignore_globs, regex_
     for idx, rule in enumerate(rules, start=1):
         matches = matches_by_rule.get(rule["id"], [])
         for m in matches:
+            if not _match_in_diff_scope(m, scan_path, changed_lines_by_file):
+                continue
             snippet = _snippet(m["file"], m["line"], context_lines, cache)
             key = f"regex|{rule['id']}|{m['file']}|{m['line']}|{hashlib.sha1(m['match_text'].encode('utf-8', errors='ignore')).hexdigest()[:12]}"
             all_findings.append(
@@ -607,6 +1086,7 @@ def pre_scan(scan_path, rules, context_lines, max_findings, ignore_globs, regex_
                     "language": _language_for_file(m["file"]),
                     "match_text": m["match_text"],
                     "snippet": snippet,
+                    "confidence_hint": _coerce_float(rule.get("confidence_hint", 0.65), 0.65),
                 }
             )
             if len(all_findings) >= max_findings:
@@ -677,7 +1157,7 @@ def _run_roslyn_sarif(scan_path, output_dir, target, configuration, timeout_seco
     return None, (message or "dotnet build did not produce SARIF output")
 
 
-def _parse_roslyn_findings(sarif_path, scan_root, context_lines, ignore_globs):
+def _parse_roslyn_findings(sarif_path, scan_root, context_lines, ignore_globs, changed_lines_by_file=None):
     cache = {}
     findings = []
     payload = json.loads(Path(sarif_path).read_text(encoding="utf-8", errors="ignore"))
@@ -718,6 +1198,12 @@ def _parse_roslyn_findings(sarif_path, scan_root, context_lines, ignore_globs):
                 rel = Path(norm_path).as_posix()
             if _is_ignored_path(rel, ignore_globs):
                 continue
+            if changed_lines_by_file:
+                if rel not in changed_lines_by_file:
+                    continue
+                touched_lines = changed_lines_by_file.get(rel, set())
+                if touched_lines and line not in touched_lines:
+                    continue
             snippet = _snippet(norm_path, line, context_lines, cache)
 
             rule_meta = rule_lookup.get(rid, {})
@@ -745,6 +1231,7 @@ def _parse_roslyn_findings(sarif_path, scan_root, context_lines, ignore_globs):
                     "language": _language_for_file(norm_path),
                     "match_text": message_text,
                     "snippet": snippet,
+                    "confidence_hint": 0.95,
                 }
             )
 
@@ -1131,6 +1618,11 @@ def save_llm_cache(cache_path, cache_data):
 
 
 def _source_confidence_hint(finding):
+    if finding.get("confidence_hint") is not None:
+        try:
+            return float(finding.get("confidence_hint"))
+        except Exception:
+            pass
     source = str(finding.get("source", "")).lower()
     if source == "roslyn":
         return 0.95
@@ -1140,6 +1632,7 @@ def _source_confidence_hint(finding):
 def _priority_sort_key(finding):
     sev = str(finding.get("default_severity", "S3")).upper()
     sev_rank = SEVERITY_ORDER.get(sev, 2)
+    noisy_rank = 1 if bool(finding.get("priority_demoted")) else 0
     hint = finding.get("confidence_hint")
     if hint is None:
         hint = _source_confidence_hint(finding)
@@ -1148,6 +1641,7 @@ def _priority_sort_key(finding):
     except Exception:
         hint = 0.5
     return (
+        noisy_rank,
         sev_rank,
         -hint,
         str(finding.get("rule_id", "")),
@@ -1282,7 +1776,10 @@ def _module_key(path):
 
 
 def summarize(reviewed):
+    for item in reviewed:
+        item["trust_tier"] = trust_tier_of(item)
     confirmed = [x for x in reviewed if bool(x.get("llm_review", {}).get("isIssue", False))]
+    fallback_findings = [x for x in reviewed if bool((x.get("llm_transport", {}) or {}).get("fallback_used", False))]
 
     def severity_of(item):
         sev = item.get("llm_review", {}).get("severity") or item.get("default_severity") or "S3"
@@ -1299,18 +1796,23 @@ def summarize(reviewed):
     by_module = Counter(_module_key(x.get("file", "")) for x in confirmed)
     by_severity = Counter(severity_of(x) for x in confirmed)
     by_source = Counter(x.get("source", "unknown") for x in confirmed)
+    by_trust_tier = Counter(x.get("trust_tier", "unknown") for x in confirmed)
     by_language = Counter(x.get("language", "unknown") for x in confirmed)
     by_file_type = Counter(x.get("file_type", "unknown") for x in confirmed)
+    rule_quality = build_rule_quality_scoreboard(reviewed)
 
     return {
         "all_reviewed": reviewed,
         "confirmed": confirmed,
+        "fallback_findings": fallback_findings,
         "by_category": dict(by_category),
         "by_module": dict(by_module),
         "by_severity": dict(by_severity),
         "by_source": dict(by_source),
+        "by_trust_tier": dict(by_trust_tier),
         "by_language": dict(by_language),
         "by_file_type": dict(by_file_type),
+        "rule_quality": rule_quality,
     }
 
 
@@ -1382,13 +1884,16 @@ def write_json_report(summary_data, output_dir, roslyn_meta, scan_meta):
         "summary": {
             "total_reviewed": len(summary_data["all_reviewed"]),
             "confirmed_issues": len(summary_data["confirmed"]),
+            "fallback_findings": len(summary_data.get("fallback_findings", [])),
             "by_severity": summary_data["by_severity"],
             "by_category": summary_data["by_category"],
             "by_module": summary_data["by_module"],
             "by_source": summary_data["by_source"],
+            "by_trust_tier": summary_data.get("by_trust_tier", {}),
             "by_language": summary_data["by_language"],
             "by_file_type": summary_data["by_file_type"],
             "throughput": summary_data.get("throughput", {}),
+            "rule_quality": summary_data.get("rule_quality", {}),
         },
         "scan": scan_meta,
         "roslyn": roslyn_meta,
@@ -1400,6 +1905,21 @@ def write_json_report(summary_data, output_dir, roslyn_meta, scan_meta):
     return output_path
 
 
+def write_fallback_report(summary_data, output_dir, scan_meta):
+    path = Path(output_dir) / scan_meta["fallback_file"]
+    payload = {
+        "summary": {
+            "total_reviewed": len(summary_data.get("all_reviewed", [])),
+            "fallback_findings": len(summary_data.get("fallback_findings", [])),
+        },
+        "scan": scan_meta,
+        "fallback_findings": summary_data.get("fallback_findings", []),
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    (Path(output_dir) / "fallback_findings.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
+
+
 def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta):
     path = Path(output_dir) / scan_meta["digest_file"]
     confirmed = summary_data["confirmed"]
@@ -1409,8 +1929,10 @@ def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta):
     lines.append("")
     lines.append(f"- Reviewed findings: {len(summary_data['all_reviewed'])}")
     lines.append(f"- Confirmed issues: {len(confirmed)}")
+    lines.append(f"- Fallback-LLM findings: {len(summary_data.get('fallback_findings', []))}")
     lines.append(f"- Severity split: {summary_data['by_severity']}")
     lines.append(f"- Source split: {summary_data['by_source']}")
+    lines.append(f"- Trust-tier split: {summary_data.get('by_trust_tier', {})}")
     if summary_data.get("throughput"):
         lines.append(f"- Throughput: {summary_data.get('throughput')}")
     lines.append("")
@@ -1455,6 +1977,39 @@ def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta):
             lines.append(f"- {k}: {v}")
     else:
         lines.append("- None")
+    lines.append("")
+
+    lines.append("## Rule Quality Scoreboard")
+    lines.append("")
+    quality = summary_data.get("rule_quality", {})
+    if quality:
+        for rid, stats in sorted(quality.items(), key=lambda kv: (-int(kv[1].get("reviewed", 0)), kv[0]))[:20]:
+            lines.append(
+                f"- {rid}: reviewed={stats.get('reviewed', 0)}, confirmed={stats.get('confirmed', 0)}, "
+                f"precision={stats.get('precision', 0.0)}, fallback_rate={stats.get('fallback_rate', 0.0)}, "
+                f"timeout_like_rate={stats.get('timeout_like_rate', 0.0)}"
+            )
+            top_fp = stats.get("top_false_positive_reasons", []) or []
+            if top_fp:
+                reason = top_fp[0].get("reason", "unspecified")
+                count = top_fp[0].get("count", 0)
+                lines.append(f"  - top_fp_reason: {reason} ({count})")
+    else:
+        lines.append("- None")
+    lines.append("")
+
+    lines.append("## Fallback Governance")
+    lines.append("")
+    fallback_items = summary_data.get("fallback_findings", [])
+    if not fallback_items:
+        lines.append("- No fallback findings.")
+    else:
+        lines.append(f"- Findings requiring fallback/manual attention: {len(fallback_items)}")
+        for item in fallback_items[:20]:
+            lines.append(
+                f"- `{item.get('rule_id', 'unknown')}` at `{item.get('file', 'unknown')}:{item.get('line', 1)}` "
+                f"error_kind=`{item.get('llm_error_kind', '')}`"
+            )
     lines.append("")
 
     lines.append("## Action Plan")
@@ -1565,6 +2120,48 @@ def write_sarif(summary_data, output_dir, scan_meta):
     return path
 
 
+def evaluate_ci_policy(summary_data, args):
+    mode = str(getattr(args, "ci_mode", "off") or "off").strip().lower()
+    if mode in {"", "off", "none"}:
+        return {"mode": "off", "breached": False, "messages": []}
+    if mode not in {"warn", "soft-fail", "hard-fail"}:
+        mode = "warn"
+
+    allowed_tiers = _parse_csv_set(getattr(args, "ci_count_trust_tiers", ""))
+    if not allowed_tiers:
+        allowed_tiers = {"llm_confirmed", "fast_routed", "fallback", "regex_only", "roslyn"}
+
+    confirmed = summary_data.get("confirmed", [])
+    scoped = [x for x in confirmed if str(x.get("trust_tier", "unknown")).lower() in allowed_tiers]
+    by_sev = Counter(str((x.get("llm_review", {}) or {}).get("severity", x.get("default_severity", "S3"))).upper() for x in scoped)
+
+    thresholds = {
+        "total": int(getattr(args, "ci_max_total", -1) or -1),
+        "S1": int(getattr(args, "ci_threshold_s1", -1) or -1),
+        "S2": int(getattr(args, "ci_threshold_s2", -1) or -1),
+        "S3": int(getattr(args, "ci_threshold_s3", -1) or -1),
+        "S4": int(getattr(args, "ci_threshold_s4", -1) or -1),
+    }
+
+    breaches = []
+    if thresholds["total"] >= 0 and len(scoped) > thresholds["total"]:
+        breaches.append(f"total={len(scoped)} > threshold={thresholds['total']}")
+    for sev in ("S1", "S2", "S3", "S4"):
+        threshold = thresholds[sev]
+        value = int(by_sev.get(sev, 0))
+        if threshold >= 0 and value > threshold:
+            breaches.append(f"{sev}={value} > threshold={threshold}")
+
+    messages = []
+    scope_desc = ",".join(sorted(allowed_tiers))
+    messages.append(f"CI policy scope trust_tiers=[{scope_desc}] count={len(scoped)}")
+    if breaches:
+        messages.append("CI policy breaches: " + "; ".join(breaches))
+    else:
+        messages.append("CI policy passed.")
+    return {"mode": mode, "breached": bool(breaches), "messages": messages}
+
+
 def main():
     load_env()
     args = parse_args()
@@ -1579,6 +2176,7 @@ def main():
     scan_path = Path(args.path).resolve()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    changed_lines_by_file = {}
     roslyn_meta = {
         "enabled": bool(args.include_roslyn),
         "executed": False,
@@ -1592,6 +2190,10 @@ def main():
         scan_meta = loaded["scan_meta"]
         if not scan_meta:
             raise ValueError("Invalid queue file: missing scan metadata")
+        if not scan_meta.get("fallback_file"):
+            project_name = scan_meta.get("project", _project_name_from_scan_path(scan_path))
+            run_version = scan_meta.get("run_version", datetime.now().strftime("%Y%m%d_%H%M%S"))
+            scan_meta["fallback_file"] = f"fallback_findings__{project_name}__{run_version}.json"
         queue_file_path = Path(loaded["queue_path"])
         output_dir = queue_file_path.parent
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1619,6 +2221,7 @@ def main():
             "queue_file": f"findings_queue__{project_name}__{run_version}.json",
             "digest_file": f"nfr_digest__{project_name}__{run_version}.md",
             "sarif_file": f"nfr__{project_name}__{run_version}.sarif",
+            "fallback_file": f"fallback_findings__{project_name}__{run_version}.json",
         }
         log_progress(f"NFR Audit Workbench scan started for path: {scan_path}")
         log_progress(f"Output directory: {output_dir.resolve()}")
@@ -1628,6 +2231,21 @@ def main():
 
         rules = load_rules(args.rules)
         log_progress(f"Loaded {len(rules)} regex rule(s) from {args.rules}")
+        if args.diff_base:
+            changed_lines_by_file = load_git_diff_filter(
+                scan_path,
+                args.diff_base,
+                args.diff_head,
+                files_only=bool(args.diff_files_only),
+            )
+            if changed_lines_by_file:
+                changed_files = len(changed_lines_by_file)
+                mode = "changed files" if args.diff_files_only else "changed lines"
+                log_progress(
+                    f"Diff mode enabled ({mode}): base={args.diff_base}, head={args.diff_head}, files={changed_files}"
+                )
+            else:
+                log_progress("Diff mode returned no changes or could not be applied; scanning full scope.")
         regex_started = time.perf_counter()
         regex_findings = pre_scan(
             scan_path,
@@ -1636,7 +2254,9 @@ def main():
             args.max_findings,
             ignore_globs,
             regex_workers=args.regex_workers,
+            changed_lines_by_file=changed_lines_by_file,
         )
+        regex_findings = apply_contextual_overrides(regex_findings)
         regex_stage_seconds = time.perf_counter() - regex_started
         log_progress(f"Regex pre-scan produced {len(regex_findings)} finding(s)")
         log_progress(f"Regex stage timing: {regex_stage_seconds:.2f}s")
@@ -1653,7 +2273,13 @@ def main():
                 args.dotnet_timeout_seconds,
             )
             if sarif_path:
-                roslyn_findings = _parse_roslyn_findings(sarif_path, scan_path, args.context_lines, ignore_globs)
+                roslyn_findings = _parse_roslyn_findings(
+                    sarif_path,
+                    scan_path,
+                    args.context_lines,
+                    ignore_globs,
+                    changed_lines_by_file=changed_lines_by_file,
+                )
                 roslyn_meta["executed"] = True
                 roslyn_meta["imported_findings"] = len(roslyn_findings)
                 roslyn_meta["sarif_path"] = str(sarif_path)
@@ -1709,6 +2335,21 @@ def main():
         log_progress(f"Loaded LLM cache entries: {len(llm_cache)} from {cache_path}")
 
     pending_findings = [f for f in findings if status_by_key.get(f.get("finding_key")) != "reviewed"]
+    quality_path = _resolve_quality_path(args.rule_quality_file, output_dir)
+    quality_history = load_rule_quality(quality_path)
+    noisy_rules = set()
+    if args.auto_demote_noisy_rules:
+        noisy_rules = derive_noisy_rules(
+            quality_history,
+            min_reviewed=args.noisy_rule_min_reviewed,
+            max_precision=args.noisy_rule_max_precision,
+            max_fallback_rate=args.noisy_rule_max_fallback_rate,
+        )
+        if noisy_rules:
+            for f in pending_findings:
+                if str(f.get("rule_id", "")) in noisy_rules:
+                    f["priority_demoted"] = True
+            log_progress(f"Auto-demoted noisy rules in queue ordering: {len(noisy_rules)} rule(s).")
     if args.prioritize_llm_queue:
         pending_findings = sorted(pending_findings, key=_priority_sort_key)
 
@@ -1737,6 +2378,7 @@ def main():
         )
 
     cache_hits = 0
+    fast_routed_hits = 0
     reps_to_review = []
     for rep in rep_queue:
         ck = rep.get("_llm_cache_key")
@@ -1760,6 +2402,19 @@ def main():
                 reviewed_by_key[item["finding_key"]] = item
                 status_by_key[item["finding_key"]] = "reviewed"
             cache_hits += 1
+        elif (
+            args.fast_high_confidence_routing
+            and rep.get("source") == "regex"
+            and _coerce_float(rep.get("confidence_hint") or _source_confidence_hint(rep), 0.0)
+            >= _coerce_float(args.high_confidence_threshold, 0.9)
+            and _severity_at_or_above(rep.get("default_severity", "S3"), args.high_confidence_max_severity)
+        ):
+            routed = build_fast_routed_review(rep)
+            expanded = expand_cluster_review(routed, cluster_by_rep_key[rep["finding_key"]])
+            for item in expanded:
+                reviewed_by_key[item["finding_key"]] = item
+                status_by_key[item["finding_key"]] = "reviewed"
+            fast_routed_hits += 1
         else:
             reps_to_review.append(rep)
 
@@ -1770,6 +2425,8 @@ def main():
             if rep.get("_llm_cache_key") in llm_cache
         )
         log_progress(f"LLM cache hits: {cache_hits} representative item(s), covering {covered} finding(s).")
+    if fast_routed_hits:
+        log_progress(f"Fast-routed high-confidence representative items: {fast_routed_hits}.")
 
     reviewed = list(reviewed_by_key.values())
     write_queue_report(findings, status_by_key, reviewed, output_dir, scan_meta, roslyn_meta)
@@ -1847,9 +2504,10 @@ def main():
             json_path = write_json_report(summary_data, output_dir, roslyn_meta, scan_meta)
             md_path = write_markdown(summary_data, output_dir, roslyn_meta, scan_meta)
             sarif_path = write_sarif(summary_data, output_dir, scan_meta)
+            fallback_path = write_fallback_report(summary_data, output_dir, scan_meta)
             log_progress(
                 f"Merged outputs updated after batch {batch_no}: "
-                f"{json_path.name}, {md_path.name}, {sarif_path.name}"
+                f"{json_path.name}, {md_path.name}, {sarif_path.name}, {fallback_path.name}"
             )
 
             if args.adaptive_llm_workers:
@@ -1898,6 +2556,10 @@ def main():
         },
         "llm_latency_ms": llm_lat,
     }
+    current_quality = summary_data.get("rule_quality", {})
+    merged_quality = merge_rule_quality(quality_history, current_quality)
+    save_rule_quality(quality_path, merged_quality)
+    summary_data["rule_quality"] = merged_quality.get("rules", {})
     log_progress(
         f"Stage timings (s): regex={regex_stage_seconds:.2f}, roslyn={roslyn_stage_seconds:.2f}, "
         f"llm={llm_stage_seconds:.2f}, total={total_seconds:.2f}"
@@ -1909,12 +2571,28 @@ def main():
     json_path = write_json_report(summary_data, output_dir, roslyn_meta, scan_meta)
     md_path = write_markdown(summary_data, output_dir, roslyn_meta, scan_meta)
     sarif_path = write_sarif(summary_data, output_dir, scan_meta)
+    fallback_path = write_fallback_report(summary_data, output_dir, scan_meta)
     write_queue_report(findings, status_by_key, reviewed, output_dir, scan_meta, roslyn_meta)
+    ci_policy = evaluate_ci_policy(summary_data, args)
+    for msg in ci_policy.get("messages", []):
+        log_progress(msg)
 
     print(f"NFR Audit Workbench scan complete. Reviewed: {len(reviewed)} | Confirmed: {len(summary_data['confirmed'])}")
     print(f"Source split (confirmed): {summary_data['by_source']}")
-    print(f"Reports written: {json_path.name}, {md_path.name}, {sarif_path.name}")
+    print(f"Reports written: {json_path.name}, {md_path.name}, {sarif_path.name}, {fallback_path.name}")
     print(f"Latest pointers updated in: {output_dir}")
+    if ci_policy.get("breached"):
+        mode = ci_policy.get("mode", "warn")
+        if mode == "hard-fail":
+            print("CI policy result: HARD-FAIL")
+            sys.exit(2)
+        if mode == "soft-fail":
+            print("CI policy result: SOFT-FAIL (non-blocking)")
+        else:
+            print("CI policy result: WARN")
+    else:
+        if ci_policy.get("mode") != "off":
+            print("CI policy result: PASS")
 
 
 if __name__ == "__main__":

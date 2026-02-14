@@ -6,7 +6,8 @@
     "top_level_category": "front_end",
     "sub_category": "concurrency",
     "severity": "S2",
-    "pattern": "\\bfetch\\s*\\((?![^\\)]*\\bsignal\\s*:)[^\\)]*\\)",
+    "pattern": "\\bfetch\\s*\\(\\s*[^,\\n\\)]*(?:,\\s*\\{(?![^}]*\\bsignal\\b)[^}]*\\})?\\s*\\)",
+    "ignore_comment_lines": true,
     "include_globs": ["*.js", "*.jsx", "*.ts", "*.tsx"],
     "exclude_globs": ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.next/**", "**/coverage/**"],
     "rationale": "In-flight requests should be cancellable during navigation/unmount to avoid stale updates and wasted network work."
@@ -18,7 +19,8 @@
     "top_level_category": "front_end",
     "sub_category": "loading",
     "severity": "S2",
-    "pattern": "\\baxios\\.(get|post|put|delete|request)\\s*\\((?![^\\)]*\\btimeout\\b)[^\\)]*\\)",
+    "pattern": "\\baxios\\.(get|post|put|delete|request)\\s*\\((?![^\\)]*\\btimeout\\b)(?![^\\)]*\\baxiosInstance\\b)[^\\)]*\\)",
+    "ignore_comment_lines": true,
     "include_globs": ["*.js", "*.jsx", "*.ts", "*.tsx"],
     "exclude_globs": ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.next/**", "**/coverage/**"],
     "rationale": "Client calls without timeout can hang and consume resources during upstream degradation."
@@ -30,7 +32,8 @@
     "top_level_category": "front_end",
     "sub_category": "concurrency",
     "severity": "S2",
-    "pattern": "\\bsetInterval\\s*\\(",
+    "pattern": "\\buseEffect\\s*\\(\\s*\\(\\s*=>[\\s\\S]{0,260}\\bsetInterval\\s*\\((?![\\s\\S]{0,260}\\bclearInterval\\s*\\()",
+    "ignore_comment_lines": true,
     "include_globs": ["*.js", "*.jsx", "*.ts", "*.tsx"],
     "exclude_globs": ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.next/**", "**/coverage/**"],
     "rationale": "Intervals that survive component teardown cause memory leaks and repeated background execution."
@@ -42,7 +45,8 @@
     "top_level_category": "front_end",
     "sub_category": "concurrency",
     "severity": "S2",
-    "pattern": "\\.then\\s*\\([^\\)]*\\)(?!\\s*\\.catch\\s*\\()",
+    "pattern": "\\.then\\s*\\(\\s*[^,\\)]{1,200}\\s*\\)(?!\\s*\\.catch\\s*\\()",
+    "ignore_comment_lines": true,
     "include_globs": ["*.js", "*.jsx", "*.ts", "*.tsx"],
     "exclude_globs": ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.next/**", "**/coverage/**"],
     "rationale": "Unhandled async errors frequently degrade UX and mask production incidents."
@@ -54,7 +58,8 @@
     "top_level_category": "front_end",
     "sub_category": "loading",
     "severity": "S1",
-    "pattern": "\\bdangerouslySetInnerHTML\\b|\\binnerHTML\\s*=",
+    "pattern": "\\bdangerouslySetInnerHTML\\b|\\b[A-Za-z_$][A-Za-z0-9_$]*\\.innerHTML\\s*=",
+    "ignore_comment_lines": true,
     "include_globs": ["*.js", "*.jsx", "*.ts", "*.tsx", "*.vue", "*.html"],
     "exclude_globs": ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.next/**", "**/coverage/**"],
     "rationale": "Unsafe HTML injection paths can create high-impact XSS and reliability incidents."
@@ -90,7 +95,8 @@
     "top_level_category": "front_end",
     "sub_category": "loading",
     "severity": "S3",
-    "pattern": "\\b(Route|createBrowserRouter|router)\\b[\\s\\S]{0,300}\\b(component|element)\\s*:\\s*[A-Z][A-Za-z0-9_]*",
+    "pattern": "\\b(createBrowserRouter|createRoutesFromElements|Route)\\b[\\s\\S]{0,360}\\belement\\s*:\\s*<\\s*[A-Z][A-Za-z0-9_]*\\b(?![\\s\\S]{0,120}\\blazy\\s*\\(|\\bSuspense\\b|\\bimport\\s*\\()",
+    "ignore_comment_lines": true,
     "include_globs": ["*.js", "*.jsx", "*.ts", "*.tsx"],
     "exclude_globs": ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.next/**", "**/coverage/**"],
     "rationale": "Eager route loading inflates initial bundle and slows first contentful render."
@@ -102,7 +108,8 @@
     "top_level_category": "front_end",
     "sub_category": "loading",
     "severity": "S3",
-    "pattern": "<img\\b(?![^>]*\\bloading=\\\"lazy\\\")",
+    "pattern": "<img\\b(?![^>]*\\bloading=\\\"lazy\\\")(?![^>]*\\bfetchpriority=\\\"high\\\")",
+    "ignore_comment_lines": true,
     "include_globs": ["*.html", "*.jsx", "*.tsx", "*.vue"],
     "exclude_globs": ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.next/**", "**/coverage/**"],
     "rationale": "Non-lazy images increase network contention and render blocking under limited bandwidth."
@@ -114,7 +121,8 @@
     "top_level_category": "front_end",
     "sub_category": "loading",
     "severity": "S3",
-    "pattern": "\\bon(Change|Input|KeyUp)\\s*=\\s*\\{[^\\}]{0,200}(fetch|axios|dispatch|setState)",
+    "pattern": "\\bon(Change|Input|KeyUp)\\s*=\\s*\\{(?![^\\}]{0,200}\\b(debounce|throttle)\\b)[^\\}]{0,220}(fetch|axios|dispatch|setState)",
+    "ignore_comment_lines": true,
     "include_globs": ["*.jsx", "*.tsx", "*.vue"],
     "exclude_globs": ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.next/**", "**/coverage/**"],
     "rationale": "High-frequency handlers without shaping can overload API and client runtime."
@@ -127,6 +135,7 @@
     "sub_category": "performance",
     "severity": "S4",
     "pattern": "\\bconsole\\.(log|debug|info|trace)\\s*\\(",
+    "ignore_comment_lines": true,
     "include_globs": ["*.js", "*.jsx", "*.ts", "*.tsx"],
     "exclude_globs": ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.next/**", "**/coverage/**", "**/*test*.*", "**/*spec*.*"],
     "rationale": "Excessive client logging increases noise and can affect render performance in low-end devices."
@@ -139,6 +148,7 @@
     "sub_category": "performance",
     "severity": "S3",
     "pattern": "\\b(for\\s*\\(|while\\s*\\()[\\s\\S]{0,300}\\b(localStorage|sessionStorage)\\.(getItem|setItem)\\s*\\(",
+    "ignore_comment_lines": true,
     "include_globs": ["*.js", "*.jsx", "*.ts", "*.tsx"],
     "exclude_globs": ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.next/**", "**/coverage/**"],
     "rationale": "Synchronous storage in loops blocks main thread and degrades interaction under load."

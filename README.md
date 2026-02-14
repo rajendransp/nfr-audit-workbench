@@ -129,6 +129,15 @@ LLM batching behavior:
 -   `--dedup-before-llm` (default on) clusters similar findings (same file/function/rule/match) and sends representative items to LLM.
 -   `--use-llm-cache` (default on) caches LLM decisions across runs in `--llm-cache-file` (default `llm_review_cache.json` under output dir).
 -   `--adaptive-llm-workers` (default on) reduces workers on timeout/fallback spikes and slowly increases after stable batches.
+-   `--fast-high-confidence-routing` enables fast mode: high-confidence regex findings are auto-confirmed without LLM.
+-   `--high-confidence-threshold` (default `0.9`) and `--high-confidence-max-severity` (default `S2`) control fast-route eligibility.
+-   `--auto-demote-noisy-rules` (default on) uses historical rule quality to demote noisy rules in queue ordering.
+-   Rule quality settings: `--rule-quality-file`, `--noisy-rule-min-reviewed`, `--noisy-rule-max-precision`, `--noisy-rule-max-fallback-rate`.
+-   Diff/PR mode: `--diff-base <git-ref>` limits scan to changed files/lines vs `--diff-head` (default `HEAD`); add `--diff-files-only` to scan all lines in changed files.
+-   CI policy modes: `--ci-mode off|warn|soft-fail|hard-fail` with thresholds by severity (`--ci-threshold-s1..s4`) and overall (`--ci-max-total`).
+-   CI trust-tier scoping: `--ci-count-trust-tiers` (comma-separated from `llm_confirmed,fast_routed,fallback,regex_only,roslyn`).
+-   Rules can optionally set `ignore_comment_lines: true` to suppress comment-only regex matches.
+-   `NFR-DOTNET-003` is tuned to target task-like blocking `.Result` patterns and avoid common `OperationResult<T>.Result` false positives.
 -   Incremental mode is on by default (`--incremental`): only new/changed findings are sent to LLM versus persisted baseline.
 -   Use `--no-incremental` for full scan mode.
 -   Baseline persistence defaults to `<output-dir>/<baseline-dir>/<project>.json` where `--baseline-dir` defaults to `baselines`.
@@ -162,7 +171,15 @@ Default parameter values (from `nfr_scan_config.json`):
 -   `dedup_before_llm`: `true`
 -   `prioritize_llm_queue`: `true`
 -   `adaptive_llm_workers`: `true`
--   `resume_queue`: `""`
+-   `fast_high_confidence_routing`: `false`
+-   `high_confidence_threshold`: `0.9`
+-   `high_confidence_max_severity`: `S2`
+-   `auto_demote_noisy_rules`: `true`
+-   `rule_quality_file`: `rule_quality.json`
+-   `noisy_rule_min_reviewed`: `20`
+-   `noisy_rule_max_precision`: `0.25`
+-   `noisy_rule_max_fallback_rate`: `0.2`
+  -   `resume_queue`: `""`
 -   `temperature`: `0.1`
 -   `baseline`: `""`
 -   `only_new`: `false`
@@ -173,6 +190,16 @@ Default parameter values (from `nfr_scan_config.json`):
 -   `dotnet_configuration`: `Debug`
 -   `dotnet_timeout_seconds`: `900`
 -   `ignore_file`: `.nfrignore`
+-   `diff_base`: `""`
+-   `diff_head`: `HEAD`
+-   `diff_files_only`: `false`
+-   `ci_mode`: `off`
+-   `ci_max_total`: `-1`
+-   `ci_threshold_s1`: `-1`
+-   `ci_threshold_s2`: `-1`
+-   `ci_threshold_s3`: `-1`
+-   `ci_threshold_s4`: `-1`
+-   `ci_count_trust_tiers`: `llm_confirmed,fast_routed,fallback,regex_only,roslyn`
 
 With Roslyn ingestion:
 
@@ -199,19 +226,24 @@ Each run writes versioned files:
 -   `findings__<project>__<timestamp>.json`
 -   `nfr_digest__<project>__<timestamp>.md`
 -   `nfr__<project>__<timestamp>.sarif`
+-   `fallback_findings__<project>__<timestamp>.json`
 
 Compatibility pointers are also updated:
 
 -   `findings.json`
 -   `nfr_digest.md`
 -   `nfr.sarif`
+-   `fallback_findings.json`
 
 Finding objects include:
 
 -   source metadata: `source`, `language`, `file_type`
 -   grouping metadata: `top_level_category` (`dotnet`/`front_end`/`rest_api`), `sub_category` (`concurrency`/`performance`/`loading`)
 -   triage metadata: `severity`, `confidence`, `effort`, `benefit`, `quick_win`
+-   trust metadata: `trust_tier` (`llm_confirmed`/`fast_routed`/`fallback`/`regex_only`/`roslyn`)
 -   reliability metadata: `llm_error_kind`, `llm_attempts`, `llm_retried`
+-   fallback governance metadata: `llm_transport.fallback_used`, dedicated fallback report JSON
+-   rule quality metadata (`summary.rule_quality`): reviewed, confirmed, precision, fallback rate, timeout-like rate, top false-positive reasons per rule
 -   recommendation metadata: `why`, `recommendation`, `testing_notes`, `patch`
 -   throughput summary metadata (`summary.throughput`): stage timings (`regex`, `roslyn`, `llm`, `total`) and LLM latency stats (`avg_ms`, `p50_ms`, `p95_ms`)
 
@@ -232,6 +264,7 @@ UI capabilities:
 -   Findings file dropdown for versioned results.
 -   Upload findings JSON and explore it (`uploaded__<timestamp>__<name>.json`).
 -   Severity/source/quick-win/fallback/search filters.
+-   Trust-tier filter and badge (`Regex-only`, `LLM-confirmed`, `Fallback`, `Fast-routed`, `Roslyn`).
 -   Top-level and sub-category filters (`dotnet`/`front_end`/`rest_api` and `concurrency`/`performance`/`loading`).
 -   Sortable table columns (including top-level/sub-category grouping columns).
 -   Flexible grid columns and pagination.
@@ -245,6 +278,16 @@ UI capabilities:
 -   LLM judgment can still be noisy for ambiguous snippets.
 -   Roslyn location data can be incomplete for some diagnostics.
 -   Very large repositories should be scanned with tuned limits (`--max-findings`, `--max-llm`).
+
+## Rule Harness Tests
+
+Run rule regression tests:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+These tests validate rule behavior against curated true-positive and false-positive fixtures.
 
 ## Repository naming note
 
