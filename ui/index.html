@@ -1,0 +1,138 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NFR Audit Workbench</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/ui/app.css" />
+</head>
+<body>
+  <div class="backdrop"></div>
+  <main class="layout">
+    <header class="top">
+      <div>
+        <h1>NFR Audit Workbench</h1>
+        <p class="sub">Readable dashboard for <code>reports/findings.json</code></p>
+      </div>
+      <div class="actions">
+        <button id="reloadBtn" class="btn">Reload</button>
+      </div>
+    </header>
+
+    <section class="cards" id="summaryCards"></section>
+
+    <section class="panel controls">
+      <div class="field">
+        <label for="filePicker">Findings File</label>
+        <select id="filePicker"></select>
+      </div>
+      <div class="field">
+        <label for="uploadInput">Upload findings.json</label>
+        <input id="uploadInput" type="file" accept=".json,application/json" />
+      </div>
+      <div class="field">
+        <label for="severityFilter">Severity</label>
+        <select id="severityFilter">
+          <option value="ALL">All</option>
+          <option value="S1">S1</option>
+          <option value="S2">S2</option>
+          <option value="S3">S3</option>
+          <option value="S4">S4</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="sourceFilter">Source</label>
+        <select id="sourceFilter">
+          <option value="ALL">All</option>
+          <option value="regex">regex</option>
+          <option value="roslyn">roslyn</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="quickWinFilter">Quick Win</label>
+        <select id="quickWinFilter">
+          <option value="ALL">All</option>
+          <option value="YES">Yes</option>
+          <option value="NO">No</option>
+        </select>
+      </div>
+      <div class="field grow">
+        <label for="searchInput">Search</label>
+        <input id="searchInput" type="text" placeholder="rule, file, why, recommendation" />
+      </div>
+    </section>
+
+    <section class="panel controls">
+      <div class="field grow">
+        <label>Columns</label>
+        <div id="columnToggles" class="toggles"></div>
+      </div>
+      <div class="field">
+        <label for="snippetHeight">Snippet Size</label>
+        <input id="snippetHeight" type="range" min="180" max="900" step="20" value="280" />
+        <div id="snippetHeightValue" class="mini">280px</div>
+      </div>
+      <div class="field">
+        <label>Status</label>
+        <div id="statusText" class="status">Ready</div>
+      </div>
+    </section>
+
+    <section class="split">
+      <section class="panel tableWrap split-left">
+        <div class="grid-scroll" id="gridScroll">
+          <table>
+            <thead>
+              <tr>
+                <th data-col="severity">Severity</th>
+                <th data-col="source">Source</th>
+                <th data-col="quickWin">Quick Win</th>
+                <th data-col="effortBenefit">Effort vs Benefit</th>
+                <th data-col="rule">Rule</th>
+                <th data-col="language">Language</th>
+                <th data-col="fileType">File Type</th>
+                <th data-col="location">Location</th>
+                <th data-col="confidence">Confidence</th>
+                <th data-col="recommendation">Recommendation</th>
+                <th data-col="snippet">Snippet</th>
+                <th data-col="patch">Patch</th>
+                <th data-col="title">Title</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+          <div id="empty" class="empty hidden">No findings match current filters.</div>
+        </div>
+        <div class="pager" id="pager">
+          <div class="pager-left">
+            <label for="pageSize">Rows / Page</label>
+            <select id="pageSize">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </div>
+          <div class="pager-mid" id="pageInfo">Page 1 / 1</div>
+          <div class="pager-right">
+            <button id="firstPageBtn" class="btn btn-lite" type="button">First</button>
+            <button id="prevPageBtn" class="btn btn-lite" type="button">Prev</button>
+            <button id="nextPageBtn" class="btn btn-lite" type="button">Next</button>
+            <button id="lastPageBtn" class="btn btn-lite" type="button">Last</button>
+          </div>
+        </div>
+      </section>
+      <div id="splitter" class="splitter" title="Drag to resize details panel"></div>
+
+      <section id="details" class="panel details split-right">
+        <h2>Finding Details</h2>
+        <div id="detailsBody" class="mini">Select a finding row to view details.</div>
+      </section>
+    </section>
+  </main>
+  <script src="/ui/app.js"></script>
+</body>
+</html>

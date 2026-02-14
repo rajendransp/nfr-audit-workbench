@@ -1,0 +1,473 @@
+var state = {
+  all: [],
+  shown: [],
+  pageRows: [],
+  currentPage: 1,
+  pageSize: 20,
+  currentFile: "findings.json",
+  columns: {
+    severity: true,
+    source: true,
+    quickWin: true,
+    effortBenefit: true,
+    rule: true,
+    language: true,
+    fileType: true,
+    location: true,
+    confidence: true,
+    recommendation: true,
+    snippet: true,
+    patch: true,
+    title: true
+  }
+};
+
+var severityEl = document.getElementById("severityFilter");
+var sourceEl = document.getElementById("sourceFilter");
+var quickWinEl = document.getElementById("quickWinFilter");
+var searchEl = document.getElementById("searchInput");
+var rowsEl = document.getElementById("rows");
+var emptyEl = document.getElementById("empty");
+var cardsEl = document.getElementById("summaryCards");
+var detailsEl = document.getElementById("details");
+var detailsBodyEl = document.getElementById("detailsBody");
+var statusEl = document.getElementById("statusText");
+var filePickerEl = document.getElementById("filePicker");
+var uploadEl = document.getElementById("uploadInput");
+var columnTogglesEl = document.getElementById("columnToggles");
+var snippetHeightEl = document.getElementById("snippetHeight");
+var snippetHeightValueEl = document.getElementById("snippetHeightValue");
+var splitterEl = document.getElementById("splitter");
+var splitEl = document.querySelector(".split");
+var pageSizeEl = document.getElementById("pageSize");
+var pageInfoEl = document.getElementById("pageInfo");
+var firstPageBtnEl = document.getElementById("firstPageBtn");
+var prevPageBtnEl = document.getElementById("prevPageBtn");
+var nextPageBtnEl = document.getElementById("nextPageBtn");
+var lastPageBtnEl = document.getElementById("lastPageBtn");
+state.pageSize = Number(pageSizeEl && pageSizeEl.value ? pageSizeEl.value : 20) || 20;
+
+var COLUMN_ORDER = ["severity","source","quickWin","effortBenefit","rule","language","fileType","location","confidence","recommendation","snippet","patch","title"];
+
+function setStatus(message) {
+  statusEl.textContent = message;
+  console.log("[NFR-Audit-Workbench] " + message);
+}
+
+function esc(v) {
+  return String(v == null ? "" : v).replace(/[&<>\"']/g, function (ch) {
+    return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch];
+  });
+}
+
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function get(obj, path, fallback) {
+  var cur = obj;
+  for (var i = 0; i < path.length; i++) {
+    if (cur == null || typeof cur !== "object" || !(path[i] in cur)) return fallback;
+    cur = cur[path[i]];
+  }
+  return cur == null ? fallback : cur;
+}
+
+function sevOf(f) {
+  return String(get(f, ["llm_review", "severity"], f.default_severity || "S3")).toUpperCase();
+}
+
+function quickWinOf(f) {
+  return Boolean(get(f, ["llm_review", "quick_win"], false));
+}
+
+function effortOf(f) {
+  return String(get(f, ["llm_review", "effort"], "medium"));
+}
+
+function benefitOf(f) {
+  return String(get(f, ["llm_review", "benefit"], "medium"));
+}
+
+function renderCards(summary) {
+  summary = summary || {};
+  var rows = [
+    ["Reviewed", summary.total_reviewed != null ? summary.total_reviewed : state.all.length],
+    ["Confirmed", summary.confirmed_issues != null ? summary.confirmed_issues : state.all.length],
+    ["S1", get(summary, ["by_severity", "S1"], 0)],
+    ["S2", get(summary, ["by_severity", "S2"], 0)],
+    ["Regex", get(summary, ["by_source", "regex"], 0)],
+    ["Roslyn", get(summary, ["by_source", "roslyn"], 0)]
+  ];
+  var html = "";
+  for (var i = 0; i < rows.length; i++) {
+    html += '<article class="card"><div class="k">' + esc(rows[i][0]) + '</div><div class="v">' + esc(rows[i][1]) + '</div></article>';
+  }
+  cardsEl.innerHTML = html;
+}
+
+function shortText(v, max) {
+  v = String(v || "");
+  if (v.length <= max) return v;
+  return v.slice(0, max - 1) + "...";
+}
+
+function td(col, content) {
+  return '<td data-col="' + col + '">' + content + '</td>';
+}
+
+function rowTemplate(f, i) {
+  var sev = sevOf(f);
+  var cls = sev.toLowerCase();
+  var title = get(f, ["llm_review", "title"], f.rule_title || "Untitled");
+  var loc = (f.file || "unknown") + ":" + (f.line || 1);
+  var conf = get(f, ["llm_review", "confidence"], "-");
+  var rec = get(f, ["llm_review", "recommendation"], "");
+  var snippet = f.snippet || f.match_text || "";
+  var patch = get(f, ["llm_review", "patch"], "unknown");
+  var quickWin = quickWinOf(f);
+  var effortBenefit = effortOf(f) + " / " + benefitOf(f);
+
+  var html = '<tr class="clickable" data-i="' + i + '">';
+  html += td("severity", '<span class="badge ' + esc(cls) + '">' + esc(sev) + '</span>');
+  html += td("source", esc(f.source || "unknown"));
+  html += td("quickWin", quickWin ? '<span class="pill-yes">Yes</span>' : '<span class="pill-no">No</span>');
+  html += td("effortBenefit", '<span class="mini">' + esc(effortBenefit) + '</span>');
+  html += td("rule", esc(f.rule_id || "-"));
+  html += td("language", esc(f.language || "unknown"));
+  html += td("fileType", esc(f.file_type || "unknown"));
+  html += td("location", '<code>' + esc(loc) + '</code>');
+  html += td("confidence", esc(conf));
+  html += td("recommendation", esc(shortText(rec, 80)));
+  html += td("snippet", esc(shortText(snippet.replace(/\s+/g, " "), 90)));
+  html += td("patch", (patch && patch !== "unknown") ? "Yes" : "No");
+  html += td("title", esc(title));
+  html += '</tr>';
+  return html;
+}
+
+function applyColumnVisibility() {
+  var ths = document.querySelectorAll("th[data-col]");
+  for (var i = 0; i < ths.length; i++) {
+    var col = ths[i].getAttribute("data-col");
+    ths[i].setAttribute("data-hide", state.columns[col] ? "0" : "1");
+  }
+  var tds = document.querySelectorAll("td[data-col]");
+  for (var j = 0; j < tds.length; j++) {
+    var c = tds[j].getAttribute("data-col");
+    tds[j].setAttribute("data-hide", state.columns[c] ? "0" : "1");
+  }
+}
+
+function renderColumnToggles() {
+  var labels = {
+    severity:"Severity",source:"Source",quickWin:"Quick Win",effortBenefit:"Effort/Benefit",rule:"Rule",language:"Language",fileType:"File Type",location:"Location",confidence:"Confidence",recommendation:"Recommendation",snippet:"Snippet",patch:"Patch",title:"Title"
+  };
+  var html = "";
+  for (var i = 0; i < COLUMN_ORDER.length; i++) {
+    var c = COLUMN_ORDER[i];
+    var checked = state.columns[c] ? "checked" : "";
+    html += '<label class="toggle-item"><input type="checkbox" data-col-toggle="' + c + '" ' + checked + '/> ' + esc(labels[c]) + '</label>';
+  }
+  columnTogglesEl.innerHTML = html;
+}
+
+function totalPages() {
+  if (state.shown.length === 0) return 1;
+  return Math.ceil(state.shown.length / state.pageSize);
+}
+
+function clampCurrentPage() {
+  var pages = totalPages();
+  if (state.currentPage < 1) state.currentPage = 1;
+  if (state.currentPage > pages) state.currentPage = pages;
+}
+
+function updatePager() {
+  clampCurrentPage();
+  var pages = totalPages();
+  var start = (state.currentPage - 1) * state.pageSize;
+  var end = Math.min(start + state.pageSize, state.shown.length);
+  pageInfoEl.textContent = "Page " + state.currentPage + " / " + pages + " (" + (state.shown.length === 0 ? 0 : (start + 1)) + "-" + end + " of " + state.shown.length + ")";
+  firstPageBtnEl.disabled = state.currentPage <= 1;
+  prevPageBtnEl.disabled = state.currentPage <= 1;
+  nextPageBtnEl.disabled = state.currentPage >= pages;
+  lastPageBtnEl.disabled = state.currentPage >= pages;
+}
+
+function renderTable() {
+  clampCurrentPage();
+  var start = (state.currentPage - 1) * state.pageSize;
+  var end = start + state.pageSize;
+  state.pageRows = state.shown.slice(start, end);
+
+  var html = "";
+  for (var i = 0; i < state.pageRows.length; i++) html += rowTemplate(state.pageRows[i], i);
+  rowsEl.innerHTML = html;
+  if (state.pageRows.length > 0) emptyEl.classList.add("hidden"); else emptyEl.classList.remove("hidden");
+  applyColumnVisibility();
+  updatePager();
+}
+
+function includeByFilters(f) {
+  var sev = sevOf(f);
+  var source = String(f.source || "unknown").toLowerCase();
+  if (severityEl.value !== "ALL" && sev !== severityEl.value) return false;
+  if (sourceEl.value !== "ALL" && source !== sourceEl.value) return false;
+
+  var qf = quickWinEl.value;
+  if (qf === "YES" && !quickWinOf(f)) return false;
+  if (qf === "NO" && quickWinOf(f)) return false;
+
+  var q = String(searchEl.value || "").trim().toLowerCase();
+  if (!q) return true;
+  var hay = [
+    f.rule_id, f.rule_title, f.file, f.match_text, f.language, f.file_type,
+    get(f,["llm_review","title"],""), get(f,["llm_review","why"],""), get(f,["llm_review","recommendation"],"")
+  ].join(" ").toLowerCase();
+  return hay.indexOf(q) !== -1;
+}
+
+function applyFilters() {
+  state.shown = state.all.filter(includeByFilters);
+  state.currentPage = 1;
+  renderTable();
+  setStatus("Showing " + state.shown.length + " / " + state.all.length + " findings");
+}
+
+function detailBlock(title, value, asPre) {
+  if (asPre == null) asPre = false;
+  if (value == null || value === "") return "";
+  var cls = asPre ? "pre" : "text-auto";
+  return '<section class="block"><h3>' + esc(title) + '</h3><div class="' + cls + '">' + esc(value) + '</div></section>';
+}
+
+function highlightDiff(text) {
+  var lines = String(text || "").split(/\r?\n/);
+  var out = [];
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    var cls = "";
+    if (/^(\+\+\+|---|@@)/.test(line)) cls = "diff-hdr";
+    else if (/^\+/.test(line)) cls = "diff-add";
+    else if (/^-/.test(line)) cls = "diff-del";
+    out.push(cls ? '<span class="' + cls + '">' + esc(line) + "</span>" : esc(line));
+  }
+  return out.join("\n");
+}
+
+function highlightCode(text, language) {
+  var html = esc(String(text || ""));
+  html = html.replace(/(\/\/.*)$/gm, '<span class="cm">$1</span>');
+  html = html.replace(/(\"([^\"\\\\]|\\\\.)*\")/g, '<span class="str">$1</span>');
+  html = html.replace(/\b(\d+)\b/g, '<span class="num">$1</span>');
+
+  if (String(language || "").toLowerCase() === "csharp" || String(language || "").toLowerCase() === "cs") {
+    var kws = [
+      "public","private","protected","internal","class","interface","struct","enum","namespace","using",
+      "async","await","return","if","else","for","foreach","while","switch","case","break","continue",
+      "try","catch","finally","throw","new","var","void","bool","int","long","float","double","decimal",
+      "string","object","Task","IActionResult","CancellationToken","null","true","false","this","base"
+    ];
+    var re = new RegExp("\\\\b(" + kws.map(escapeRegExp).join("|") + ")\\\\b", "g");
+    html = html.replace(re, '<span class="kw">$1</span>');
+  }
+  return html;
+}
+
+function detailCodeBlock(title, text, mode, language) {
+  if (text == null || text === "") return "";
+  var rendered = mode === "diff" ? highlightDiff(text) : highlightCode(text, language);
+  return '<section class="block"><h3>' + esc(title) + '</h3><pre class="pre code-block"><code>' + rendered + "</code></pre></section>";
+}
+
+function showDetails(f) {
+  var lr = f.llm_review || {};
+  var loc = (f.file || "unknown") + ":" + (f.line || 1);
+  var content = "";
+  content += detailBlock("Title", lr.title || f.rule_title || "-");
+  content += detailBlock("Severity", sevOf(f));
+  content += detailBlock("Rule", (f.rule_id || "-") + " (" + (f.source || "unknown") + ")");
+  content += detailBlock("Language / File Type", (f.language || "unknown") + " / " + (f.file_type || "unknown"));
+  content += detailBlock("Effort vs Benefit", effortOf(f) + " / " + benefitOf(f));
+  content += detailBlock("Quick Win", quickWinOf(f) ? "Yes" : "No");
+  content += detailBlock("Location", loc);
+  content += detailBlock("Why", lr.why || "-", false);
+  content += detailBlock("Recommendation", lr.recommendation || "-", false);
+  content += detailCodeBlock("Code Snippet", f.snippet || f.match_text || "", "code", f.language || "unknown");
+  if (lr.patch && String(lr.patch).toLowerCase() !== "unknown") content += detailCodeBlock("Suggested Patch", lr.patch, "diff", "diff");
+  detailsBodyEl.innerHTML = content;
+}
+
+function showError(err) {
+  rowsEl.innerHTML = "";
+  emptyEl.classList.remove("hidden");
+  emptyEl.textContent = err && err.message ? err.message : "Failed to load findings.";
+  setStatus("Error: " + emptyEl.textContent);
+}
+
+function loadFileOptions() {
+  setStatus("Loading findings file list...");
+  return fetch("/api/findings-files", { cache: "no-store" })
+    .then(function (r) { if (!r.ok) throw new Error("Failed to list findings files"); return r.json(); })
+    .then(function (payload) {
+      var files = payload.files || [];
+      var html = "";
+      for (var i = 0; i < files.length; i++) {
+        html += '<option value="' + esc(files[i].name) + '">' + esc(files[i].name) + '</option>';
+      }
+      filePickerEl.innerHTML = html || '<option value="findings.json">findings.json</option>';
+      if (files.length > 0) {
+        if (!state.currentFile) state.currentFile = files[0].name;
+        filePickerEl.value = state.currentFile;
+      }
+      setStatus("Loaded " + files.length + " findings file option(s)");
+    });
+}
+
+function loadData(fileName) {
+  state.currentFile = fileName || filePickerEl.value || "findings.json";
+  setStatus("Loading " + state.currentFile + " ...");
+  return fetch("/api/findings-file?name=" + encodeURIComponent(state.currentFile), { cache: "no-store" })
+    .then(function (res) {
+      if (!res.ok) throw new Error("Failed to load " + state.currentFile + " (" + res.status + ")");
+      return res.json();
+    })
+    .then(function (payload) {
+      var json = payload.data || {};
+      var findings = json.findings || [];
+      state.all = findings.filter(function (f) { return get(f, ["llm_review", "isIssue"], true) !== false; });
+      renderCards(json.summary || {});
+      applyFilters();
+      setStatus("Loaded " + state.all.length + " finding(s) from " + state.currentFile);
+    });
+}
+
+function uploadFile(file) {
+  if (!file) return Promise.resolve();
+  setStatus("Uploading " + file.name + " ...");
+  var form = new FormData();
+  form.append("file", file, file.name);
+  return fetch("/api/upload-findings", { method: "POST", body: form })
+    .then(function (res) { if (!res.ok) throw new Error("Upload failed (" + res.status + ")"); return res.json(); })
+    .then(function (payload) {
+      setStatus("Upload saved as " + payload.saved_as);
+      return loadFileOptions().then(function () {
+        filePickerEl.value = payload.saved_as;
+        return loadData(payload.saved_as);
+      });
+    });
+}
+
+document.getElementById("reloadBtn").addEventListener("click", function () {
+  loadFileOptions().then(function () { return loadData(state.currentFile); }).catch(showError);
+});
+
+filePickerEl.addEventListener("change", function () { loadData(filePickerEl.value).catch(showError); });
+uploadEl.addEventListener("change", function () { uploadFile(uploadEl.files[0]).catch(showError); });
+severityEl.addEventListener("change", applyFilters);
+sourceEl.addEventListener("change", applyFilters);
+quickWinEl.addEventListener("change", applyFilters);
+searchEl.addEventListener("input", applyFilters);
+
+columnTogglesEl.addEventListener("change", function (e) {
+  var col = e.target.getAttribute("data-col-toggle");
+  if (!col) return;
+  state.columns[col] = Boolean(e.target.checked);
+  applyColumnVisibility();
+});
+
+rowsEl.addEventListener("click", function (e) {
+  var tr = e.target.closest("tr[data-i]");
+  if (!tr) return;
+  var i = Number(tr.getAttribute("data-i"));
+  showDetails(state.pageRows[i]);
+});
+
+pageSizeEl.addEventListener("change", function () {
+  var size = Number(pageSizeEl.value || "20");
+  if (!size || size < 1) size = 20;
+  state.pageSize = size;
+  state.currentPage = 1;
+  renderTable();
+});
+
+firstPageBtnEl.addEventListener("click", function () {
+  state.currentPage = 1;
+  renderTable();
+});
+prevPageBtnEl.addEventListener("click", function () {
+  state.currentPage = Math.max(1, state.currentPage - 1);
+  renderTable();
+});
+nextPageBtnEl.addEventListener("click", function () {
+  state.currentPage = Math.min(totalPages(), state.currentPage + 1);
+  renderTable();
+});
+lastPageBtnEl.addEventListener("click", function () {
+  state.currentPage = totalPages();
+  renderTable();
+});
+
+function applyDetailsWidth(pct) {
+  var p = Number(pct);
+  if (!p || isNaN(p)) return;
+  if (p < 25) p = 25;
+  if (p > 60) p = 60;
+  document.documentElement.style.setProperty("--details-width", p + "%");
+  try { localStorage.setItem("nfr_details_width", String(p)); } catch (e) {}
+}
+
+function applySnippetHeight(px) {
+  var h = Number(px);
+  if (!h || isNaN(h)) return;
+  if (h < 180) h = 180;
+  if (h > 900) h = 900;
+  document.documentElement.style.setProperty("--snippet-max-height", h + "px");
+  if (snippetHeightEl) snippetHeightEl.value = String(h);
+  if (snippetHeightValueEl) snippetHeightValueEl.textContent = h + "px";
+  try { localStorage.setItem("nfr_snippet_height", String(h)); } catch (e) {}
+}
+
+function initSplitter() {
+  if (!splitterEl || !splitEl) return;
+  try {
+    var stored = localStorage.getItem("nfr_details_width");
+    if (stored) applyDetailsWidth(stored);
+  } catch (e) {}
+
+  var dragging = false;
+  function onMove(ev) {
+    if (!dragging || window.innerWidth <= 980) return;
+    var rect = splitEl.getBoundingClientRect();
+    var detailsPct = ((rect.right - ev.clientX) / rect.width) * 100;
+    applyDetailsWidth(detailsPct);
+  }
+  function onUp() { dragging = false; document.body.style.userSelect = ""; }
+
+  splitterEl.addEventListener("mousedown", function () {
+    if (window.innerWidth <= 980) return;
+    dragging = true;
+    document.body.style.userSelect = "none";
+  });
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+}
+
+function initSnippetHeight() {
+  var stored = null;
+  try { stored = localStorage.getItem("nfr_snippet_height"); } catch (e) {}
+  if (stored) applySnippetHeight(stored);
+  else applySnippetHeight(snippetHeightEl ? snippetHeightEl.value : 280);
+
+  if (snippetHeightEl) {
+    snippetHeightEl.addEventListener("input", function () {
+      applySnippetHeight(snippetHeightEl.value);
+    });
+  }
+}
+
+renderColumnToggles();
+initSplitter();
+initSnippetHeight();
+loadFileOptions().then(function () { return loadData(state.currentFile); }).catch(showError);

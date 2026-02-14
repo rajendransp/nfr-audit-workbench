@@ -1,0 +1,102 @@
+[
+  {
+    "id": "NFR-DOTNET-001",
+    "title": "HttpClient call without CancellationToken",
+    "category": "reliability",
+    "severity": "S2",
+    "pattern": "\\b(HttpClient|_httpClient|client)\\.(GetAsync|PostAsync|PutAsync|DeleteAsync|SendAsync)\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
+    "include_globs": ["*.cs"],
+    "exclude_globs": ["**/bin/**", "**/obj/**", "**/Migrations/**"],
+    "rationale": "Network calls should propagate cancellation to prevent wasted compute after client disconnects."
+  },
+  {
+    "id": "NFR-DOTNET-002",
+    "title": "EF Core async query without CancellationToken",
+    "category": "reliability",
+    "severity": "S2",
+    "pattern": "\\.(ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync|AnyAsync|CountAsync|ExecuteUpdateAsync|ExecuteDeleteAsync)\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
+    "include_globs": ["*.cs"],
+    "exclude_globs": ["**/bin/**", "**/obj/**", "**/Migrations/**"],
+    "rationale": "DB calls should be cancellable to avoid unnecessary work under load."
+  },
+  {
+    "id": "NFR-DOTNET-003",
+    "title": "Blocking wait in async-capable code",
+    "category": "performance",
+    "severity": "S1",
+    "pattern": "\\.(Result|Wait\\s*\\()",
+    "include_globs": ["*.cs"],
+    "exclude_globs": ["**/bin/**", "**/obj/**"],
+    "rationale": "Blocking waits can cause deadlocks and thread pool starvation."
+  },
+  {
+    "id": "NFR-DOTNET-004",
+    "title": "Thread.Sleep used",
+    "category": "performance",
+    "severity": "S2",
+    "pattern": "\\bThread\\.Sleep\\s*\\(",
+    "include_globs": ["*.cs"],
+    "exclude_globs": ["**/bin/**", "**/obj/**"],
+    "rationale": "Sleep blocks threads and harms throughput; prefer async delay with cancellation."
+  },
+  {
+    "id": "NFR-DOTNET-005",
+    "title": "new HttpClient in code path",
+    "category": "scalability",
+    "severity": "S2",
+    "pattern": "\\bnew\\s+HttpClient\\s*\\(",
+    "include_globs": ["*.cs"],
+    "exclude_globs": ["**/bin/**", "**/obj/**", "**/*Tests*.cs", "**/Program.cs"],
+    "rationale": "Repeated HttpClient allocation can cause socket exhaustion."
+  },
+  {
+    "id": "NFR-DOTNET-006",
+    "title": "ExecuteSqlRaw without CancellationToken",
+    "category": "reliability",
+    "severity": "S2",
+    "pattern": "\\.ExecuteSqlRaw(Async)?\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
+    "include_globs": ["*.cs"],
+    "exclude_globs": ["**/bin/**", "**/obj/**", "**/Migrations/**"],
+    "rationale": "Raw SQL operations should honor cancellation in services and APIs."
+  },
+  {
+    "id": "NFR-DOTNET-007",
+    "title": "High command timeout configured",
+    "category": "reliability",
+    "severity": "S3",
+    "pattern": "\\b(CommandTimeout|SetCommandTimeout)\\b[^\\n]*\\b([3-9][0-9]{2,}|[1-9][0-9]{3,})\\b",
+    "include_globs": ["*.cs", "*.json", "*.config", "appsettings*.json"],
+    "exclude_globs": ["**/bin/**", "**/obj/**"],
+    "rationale": "Very high timeouts can mask upstream latency and propagate incidents."
+  },
+  {
+    "id": "NFR-DOTNET-008",
+    "title": "Task.Delay without CancellationToken",
+    "category": "reliability",
+    "severity": "S2",
+    "pattern": "\\bTask\\.Delay\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
+    "include_globs": ["*.cs"],
+    "exclude_globs": ["**/bin/**", "**/obj/**"],
+    "rationale": "Delays in workers and retries should be cancellable for graceful shutdown."
+  },
+  {
+    "id": "NFR-DOTNET-009",
+    "title": "Unbounded Parallel.ForEach",
+    "category": "scalability",
+    "severity": "S2",
+    "pattern": "\\bParallel\\.ForEach\\s*\\(",
+    "include_globs": ["*.cs"],
+    "exclude_globs": ["**/bin/**", "**/obj/**"],
+    "rationale": "Unbounded parallelism can overwhelm CPU, thread pool, and downstream dependencies."
+  },
+  {
+    "id": "NFR-DOTNET-010",
+    "title": "Potential N+1 query inside loop",
+    "category": "performance",
+    "severity": "S3",
+    "pattern": "\\b(for(each)?|while)\\b[\\s\\S]{0,400}\\.(FirstOrDefaultAsync|SingleOrDefaultAsync|ToListAsync|AnyAsync|CountAsync)\\s*\\(",
+    "include_globs": ["*.cs"],
+    "exclude_globs": ["**/bin/**", "**/obj/**"],
+    "rationale": "Repeated DB calls in loops can create N+1 latency and load issues."
+  }
+]
