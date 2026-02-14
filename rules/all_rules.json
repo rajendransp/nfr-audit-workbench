@@ -1,0 +1,853 @@
+[
+    {
+        "id":  "NFR-DOTNET-001",
+        "title":  "HttpClient call without CancellationToken",
+        "category":  "reliability",
+        "top_level_category":  "dotnet",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "pattern":  "\\b(HttpClient|_httpClient|client)\\.(GetAsync|PostAsync|PutAsync|DeleteAsync|SendAsync)\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/Migrations/**"
+                          ],
+        "rationale":  "Network calls should propagate cancellation to prevent wasted compute after client disconnects."
+    },
+    {
+        "id":  "NFR-DOTNET-002",
+        "title":  "EF Core async query without CancellationToken",
+        "category":  "reliability",
+        "top_level_category":  "dotnet",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "pattern":  "\\.(ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync|AnyAsync|CountAsync|ExecuteUpdateAsync|ExecuteDeleteAsync)\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/Migrations/**"
+                          ],
+        "rationale":  "DB calls should be cancellable to avoid unnecessary work under load."
+    },
+    {
+        "id":  "NFR-DOTNET-003",
+        "title":  "Blocking wait in async-capable code",
+        "category":  "performance",
+        "top_level_category":  "dotnet",
+        "sub_category":  "concurrency",
+        "severity":  "S1",
+        "pattern":  "(\\.Result\\b(?!\\s*=)|\\.Wait\\s*\\(|GetAwaiter\\s*\\(\\)\\.GetResult\\s*\\(|\\bTask\\.Wait(All|Any)\\s*\\()",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**"
+                          ],
+        "rationale":  "Blocking waits can cause deadlocks and thread pool starvation."
+    },
+    {
+        "id":  "NFR-DOTNET-004",
+        "title":  "Thread.Sleep used",
+        "category":  "performance",
+        "top_level_category":  "dotnet",
+        "sub_category":  "performance",
+        "severity":  "S2",
+        "pattern":  "\\bThread\\.Sleep\\s*\\(",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**"
+                          ],
+        "rationale":  "Sleep blocks threads and harms throughput; prefer async delay with cancellation."
+    },
+    {
+        "id":  "NFR-DOTNET-005",
+        "title":  "new HttpClient in code path",
+        "category":  "scalability",
+        "top_level_category":  "dotnet",
+        "sub_category":  "loading",
+        "severity":  "S2",
+        "pattern":  "\\bnew\\s+HttpClient\\s*\\(",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs",
+                              "**/Program.cs"
+                          ],
+        "rationale":  "Repeated HttpClient allocation can cause socket exhaustion."
+    },
+    {
+        "id":  "NFR-DOTNET-006",
+        "title":  "ExecuteSqlRaw without CancellationToken",
+        "category":  "reliability",
+        "top_level_category":  "dotnet",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "pattern":  "\\.ExecuteSqlRaw(Async)?\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/Migrations/**"
+                          ],
+        "rationale":  "Raw SQL operations should honor cancellation in services and APIs."
+    },
+    {
+        "id":  "NFR-DOTNET-007",
+        "title":  "High command timeout configured",
+        "category":  "reliability",
+        "top_level_category":  "dotnet",
+        "sub_category":  "loading",
+        "severity":  "S3",
+        "pattern":  "\\b(CommandTimeout|SetCommandTimeout)\\b[^\\n]*\\b([3-9][0-9]{2,}|[1-9][0-9]{3,})\\b",
+        "include_globs":  [
+                              "*.cs",
+                              "*.json",
+                              "*.config",
+                              "appsettings*.json"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**"
+                          ],
+        "rationale":  "Very high timeouts can mask upstream latency and propagate incidents."
+    },
+    {
+        "id":  "NFR-DOTNET-008",
+        "title":  "Task.Delay without CancellationToken",
+        "category":  "reliability",
+        "top_level_category":  "dotnet",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "pattern":  "\\bTask\\.Delay\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**"
+                          ],
+        "rationale":  "Delays in workers and retries should be cancellable for graceful shutdown."
+    },
+    {
+        "id":  "NFR-DOTNET-009",
+        "title":  "Unbounded Parallel.ForEach",
+        "category":  "scalability",
+        "top_level_category":  "dotnet",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "pattern":  "\\bParallel\\.ForEach\\s*\\(",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**"
+                          ],
+        "rationale":  "Unbounded parallelism can overwhelm CPU, thread pool, and downstream dependencies."
+    },
+    {
+        "id":  "NFR-DOTNET-010",
+        "title":  "Potential N+1 query inside loop",
+        "category":  "performance",
+        "top_level_category":  "dotnet",
+        "sub_category":  "loading",
+        "severity":  "S3",
+        "pattern":  "\\b(for(each)?|while)\\b[\\s\\S]{0,400}\\.(FirstOrDefaultAsync|SingleOrDefaultAsync|ToListAsync|AnyAsync|CountAsync)\\s*\\(",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**"
+                          ],
+        "rationale":  "Repeated DB calls in loops can create N+1 latency and load issues."
+    },
+    {
+        "id":  "NFR-DOTNET-011",
+        "title":  "async void method",
+        "category":  "reliability",
+        "top_level_category":  "dotnet",
+        "sub_category":  "concurrency",
+        "severity":  "S1",
+        "pattern":  "\\basync\\s+void\\s+[A-Za-z_][A-Za-z0-9_]*\\s*\\(",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Designer.cs"
+                          ],
+        "rationale":  "async void methods cannot be awaited and exceptions bypass normal task error handling."
+    },
+    {
+        "id":  "NFR-DOTNET-012",
+        "title":  "Fire-and-forget Task.Run",
+        "category":  "reliability",
+        "top_level_category":  "dotnet",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "pattern":  "(^|\\s)_\\s*=\\s*Task\\.Run\\s*\\(",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Detached tasks can hide failures and outlive request scope resources."
+    },
+    {
+        "id":  "NFR-DOTNET-013",
+        "title":  "Explicit CancellationToken.None",
+        "category":  "reliability",
+        "top_level_category":  "dotnet",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "pattern":  "\\bCancellationToken\\.None\\b",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Hardcoding non-cancellable operations can block graceful shutdown and wasted work cancellation."
+    },
+    {
+        "id":  "NFR-DOTNET-014",
+        "title":  "Empty catch block",
+        "category":  "reliability",
+        "top_level_category":  "dotnet",
+        "sub_category":  "loading",
+        "severity":  "S2",
+        "pattern":  "\\bcatch\\s*\\([^\\)]*\\)\\s*\\{\\s*\\}",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**"
+                          ],
+        "rationale":  "Swallowed exceptions hide systemic failures that surface as intermittent load incidents."
+    },
+    {
+        "id":  "NFR-DOTNET-015",
+        "title":  "Synchronous file read in request path",
+        "category":  "performance",
+        "top_level_category":  "dotnet",
+        "sub_category":  "performance",
+        "severity":  "S2",
+        "pattern":  "\\b(File\\.ReadAllText|File\\.ReadAllBytes|File\\.OpenRead)\\s*\\(",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Sync file I/O can block thread pool threads and reduce throughput."
+    },
+    {
+        "id":  "NFR-DOTNET-016",
+        "title":  "LINQ materialization before filtering",
+        "category":  "performance",
+        "top_level_category":  "dotnet",
+        "sub_category":  "performance",
+        "severity":  "S3",
+        "pattern":  "\\.ToList\\s*\\(\\s*\\)\\s*\\.(Where|Select|OrderBy|GroupBy)\\s*\\(",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**"
+                          ],
+        "rationale":  "Materializing early increases allocations and memory pressure."
+    },
+    {
+        "id":  "NFR-DOTNET-017",
+        "title":  "Large in-memory collection materialization",
+        "category":  "performance",
+        "top_level_category":  "dotnet",
+        "sub_category":  "loading",
+        "severity":  "S3",
+        "pattern":  "\\b(_db\\w*|dbContext|context)\\b[\\s\\S]{0,240}\\.(ToArrayAsync|ToListAsync|ToArray|ToList)\\s*\\(",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Large materializations can cause memory spikes and GC churn under load."
+    },
+    {
+        "id":  "NFR-DOTNET-018",
+        "title":  "Missing pagination in query endpoint",
+        "category":  "scalability",
+        "top_level_category":  "dotnet",
+        "sub_category":  "loading",
+        "severity":  "S2",
+        "pattern":  "\\b(IQueryable\u003c|DbSet\u003c)[\\s\\S]{0,300}\\.(ToListAsync|ToList)\\s*\\(",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/Migrations/**"
+                          ],
+        "rationale":  "Unbounded result sets are a common root cause of load amplification."
+    },
+    {
+        "id":  "NFR-DOTNET-019",
+        "title":  "Parallel.ForEachAsync without token",
+        "category":  "reliability",
+        "top_level_category":  "dotnet",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "pattern":  "\\bParallel\\.ForEachAsync\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**"
+                          ],
+        "rationale":  "Parallel loops should be cancellable to avoid runaway background work."
+    },
+    {
+        "id":  "NFR-DOTNET-020",
+        "title":  "Read query without AsNoTracking",
+        "category":  "performance",
+        "top_level_category":  "dotnet",
+        "sub_category":  "performance",
+        "severity":  "S3",
+        "pattern":  "\\b_db\\w*\\.[A-Za-z0-9_]+\\b(?![\\s\\S]{0,120}AsNoTracking\\s*\\()([\\s\\S]{0,160})\\.(ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync|AnyAsync|CountAsync)\\s*\\(",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/Migrations/**"
+                          ],
+        "rationale":  "Tracked entities in read-only flows increase memory usage and change-tracker overhead."
+    },
+    {
+        "id":  "NFR-FE-001",
+        "title":  "fetch call without AbortSignal",
+        "category":  "reliability",
+        "top_level_category":  "front_end",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "pattern":  "\\bfetch\\s*\\((?![^\\)]*\\bsignal\\s*:)[^\\)]*\\)",
+        "include_globs":  [
+                              "*.js",
+                              "*.jsx",
+                              "*.ts",
+                              "*.tsx"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "In-flight requests should be cancellable during navigation/unmount to avoid stale updates and wasted network work."
+    },
+    {
+        "id":  "NFR-FE-002",
+        "title":  "Axios call without timeout",
+        "category":  "reliability",
+        "top_level_category":  "front_end",
+        "sub_category":  "loading",
+        "severity":  "S2",
+        "pattern":  "\\baxios\\.(get|post|put|delete|request)\\s*\\((?![^\\)]*\\btimeout\\b)[^\\)]*\\)",
+        "include_globs":  [
+                              "*.js",
+                              "*.jsx",
+                              "*.ts",
+                              "*.tsx"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "Client calls without timeout can hang and consume resources during upstream degradation."
+    },
+    {
+        "id":  "NFR-FE-003",
+        "title":  "setInterval without cleanup",
+        "category":  "reliability",
+        "top_level_category":  "front_end",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "pattern":  "\\bsetInterval\\s*\\(",
+        "include_globs":  [
+                              "*.js",
+                              "*.jsx",
+                              "*.ts",
+                              "*.tsx"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "Intervals that survive component teardown cause memory leaks and repeated background execution."
+    },
+    {
+        "id":  "NFR-FE-004",
+        "title":  "Unhandled promise chain",
+        "category":  "reliability",
+        "top_level_category":  "front_end",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "pattern":  "\\.then\\s*\\([^\\)]*\\)(?!\\s*\\.catch\\s*\\()",
+        "include_globs":  [
+                              "*.js",
+                              "*.jsx",
+                              "*.ts",
+                              "*.tsx"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "Unhandled async errors frequently degrade UX and mask production incidents."
+    },
+    {
+        "id":  "NFR-FE-005",
+        "title":  "dangerouslySetInnerHTML usage",
+        "category":  "reliability",
+        "top_level_category":  "front_end",
+        "sub_category":  "loading",
+        "severity":  "S1",
+        "pattern":  "\\bdangerouslySetInnerHTML\\b|\\binnerHTML\\s*=",
+        "include_globs":  [
+                              "*.js",
+                              "*.jsx",
+                              "*.ts",
+                              "*.tsx",
+                              "*.vue",
+                              "*.html"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "Unsafe HTML injection paths can create high-impact XSS and reliability incidents."
+    },
+    {
+        "id":  "NFR-FE-006",
+        "title":  "Array index used as React key",
+        "category":  "performance",
+        "top_level_category":  "front_end",
+        "sub_category":  "performance",
+        "severity":  "S3",
+        "pattern":  "\\bkey\\s*=\\s*\\{\\s*(index|i)\\s*\\}",
+        "include_globs":  [
+                              "*.jsx",
+                              "*.tsx"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "Unstable keys increase rerenders and can corrupt UI state mapping."
+    },
+    {
+        "id":  "NFR-FE-007",
+        "title":  "Large synchronous loop in render path",
+        "category":  "performance",
+        "top_level_category":  "front_end",
+        "sub_category":  "performance",
+        "severity":  "S2",
+        "pattern":  "\\b(render\\s*\\(|return\\s*\\()([\\s\\S]{0,300})\\b(for\\s*\\(|while\\s*\\()",
+        "include_globs":  [
+                              "*.js",
+                              "*.jsx",
+                              "*.ts",
+                              "*.tsx"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "Expensive synchronous work in render paths harms frame time and interaction latency."
+    },
+    {
+        "id":  "NFR-FE-008",
+        "title":  "No lazy loading for route components",
+        "category":  "performance",
+        "top_level_category":  "front_end",
+        "sub_category":  "loading",
+        "severity":  "S3",
+        "pattern":  "\\b(Route|createBrowserRouter|router)\\b[\\s\\S]{0,300}\\b(component|element)\\s*:\\s*[A-Z][A-Za-z0-9_]*",
+        "include_globs":  [
+                              "*.js",
+                              "*.jsx",
+                              "*.ts",
+                              "*.tsx"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "Eager route loading inflates initial bundle and slows first contentful render."
+    },
+    {
+        "id":  "NFR-FE-009",
+        "title":  "Image without lazy loading",
+        "category":  "performance",
+        "top_level_category":  "front_end",
+        "sub_category":  "loading",
+        "severity":  "S3",
+        "pattern":  "\u003cimg\\b(?![^\u003e]*\\bloading=\\\"lazy\\\")",
+        "include_globs":  [
+                              "*.html",
+                              "*.jsx",
+                              "*.tsx",
+                              "*.vue"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "Non-lazy images increase network contention and render blocking under limited bandwidth."
+    },
+    {
+        "id":  "NFR-FE-010",
+        "title":  "Frequent input handler without debounce/throttle",
+        "category":  "performance",
+        "top_level_category":  "front_end",
+        "sub_category":  "loading",
+        "severity":  "S3",
+        "pattern":  "\\bon(Change|Input|KeyUp)\\s*=\\s*\\{[^\\}]{0,200}(fetch|axios|dispatch|setState)",
+        "include_globs":  [
+                              "*.jsx",
+                              "*.tsx",
+                              "*.vue"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "High-frequency handlers without shaping can overload API and client runtime."
+    },
+    {
+        "id":  "NFR-FE-011",
+        "title":  "console.log in app code",
+        "category":  "reliability",
+        "top_level_category":  "front_end",
+        "sub_category":  "performance",
+        "severity":  "S4",
+        "pattern":  "\\bconsole\\.(log|debug|info|trace)\\s*\\(",
+        "include_globs":  [
+                              "*.js",
+                              "*.jsx",
+                              "*.ts",
+                              "*.tsx"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**",
+                              "**/*test*.*",
+                              "**/*spec*.*"
+                          ],
+        "rationale":  "Excessive client logging increases noise and can affect render performance in low-end devices."
+    },
+    {
+        "id":  "NFR-FE-012",
+        "title":  "Blocking synchronous Web Storage access in loop",
+        "category":  "performance",
+        "top_level_category":  "front_end",
+        "sub_category":  "performance",
+        "severity":  "S3",
+        "pattern":  "\\b(for\\s*\\(|while\\s*\\()[\\s\\S]{0,300}\\b(localStorage|sessionStorage)\\.(getItem|setItem)\\s*\\(",
+        "include_globs":  [
+                              "*.js",
+                              "*.jsx",
+                              "*.ts",
+                              "*.tsx"
+                          ],
+        "exclude_globs":  [
+                              "**/node_modules/**",
+                              "**/dist/**",
+                              "**/build/**",
+                              "**/.next/**",
+                              "**/coverage/**"
+                          ],
+        "rationale":  "Synchronous storage in loops blocks main thread and degrades interaction under load."
+    },
+    {
+        "id":  "NFR-API-001",
+        "title":  "Controller action missing CancellationToken",
+        "category":  "reliability",
+        "top_level_category":  "rest_api",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "pattern":  "\\b(public|private|internal|protected)\\s+(async\\s+)?Task\u003c[^\u003e]+\u003e\\s+[A-Za-z0-9_]+\\s*\\((?![^\\)]*\\bCancellationToken\\b)[^\\)]*\\)",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Request handlers should accept cancellation to stop work after disconnects/timeouts."
+    },
+    {
+        "id":  "NFR-API-002",
+        "title":  "Large request body limit configured",
+        "category":  "reliability",
+        "top_level_category":  "rest_api",
+        "sub_category":  "loading",
+        "severity":  "S2",
+        "pattern":  "\\b(MaxRequestBodySize|RequestSizeLimit)\\b[^\\n]*\\b([1-9][0-9]{7,})\\b",
+        "include_globs":  [
+                              "*.cs",
+                              "appsettings*.json",
+                              "*.json"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**"
+                          ],
+        "rationale":  "Very large body limits increase memory pressure and denial-of-service exposure."
+    },
+    {
+        "id":  "NFR-API-003",
+        "title":  "No pagination on collection response",
+        "category":  "scalability",
+        "top_level_category":  "rest_api",
+        "sub_category":  "loading",
+        "severity":  "S2",
+        "pattern":  "\\b(IActionResult|ActionResult\u003c|IEnumerable\u003c|List\u003c)\\b[\\s\\S]{0,250}\\b(Get|List|Search|Query)\\b[\\s\\S]{0,400}\\b(Ok\\s*\\(|return\\s+[^;]*)(?![\\s\\S]{0,200}\\b(skip|take|page|pageSize|limit|offset)\\b)",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Unpaged collection endpoints can saturate CPU, memory, and downstream stores."
+    },
+    {
+        "id":  "NFR-API-004",
+        "title":  "Synchronous serialization/deserialization",
+        "category":  "performance",
+        "top_level_category":  "rest_api",
+        "sub_category":  "performance",
+        "severity":  "S3",
+        "pattern":  "\\b(JsonSerializer\\.Deserialize|JsonConvert\\.DeserializeObject|JsonSerializer\\.Serialize|JsonConvert\\.SerializeObject)\\s*\\(",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Heavy sync serialization in request pipeline can reduce throughput."
+    },
+    {
+        "id":  "NFR-API-005",
+        "title":  "Missing response caching hints on GET endpoint",
+        "category":  "performance",
+        "top_level_category":  "rest_api",
+        "sub_category":  "loading",
+        "severity":  "S3",
+        "pattern":  "\\[HttpGet[^\\]]*\\][\\s\\S]{0,250}(?!\\[ResponseCache\\b)(public|private|internal)\\s+(async\\s+)?Task",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Missing cache hints can force avoidable load onto origin services."
+    },
+    {
+        "id":  "NFR-API-006",
+        "title":  "Endpoint returns full entity directly",
+        "category":  "scalability",
+        "top_level_category":  "rest_api",
+        "sub_category":  "loading",
+        "severity":  "S3",
+        "pattern":  "\\breturn\\s+Ok\\s*\\(\\s*[A-Za-z0-9_]+\\s*\\)\\s*;",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Returning full entities often leaks unnecessary fields and bloats payload size."
+    },
+    {
+        "id":  "NFR-API-007",
+        "title":  "No request timeout policy in HttpClient registration",
+        "category":  "reliability",
+        "top_level_category":  "rest_api",
+        "sub_category":  "loading",
+        "severity":  "S2",
+        "pattern":  "\\bAddHttpClient\\b[\\s\\S]{0,240}(?!\\bTimeout\\b)(?!\\bAddPolicyHandler\\b)",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Upstream hangs without timeout policies can exhaust worker resources."
+    },
+    {
+        "id":  "NFR-API-008",
+        "title":  "Retry policy without jitter/backoff",
+        "category":  "reliability",
+        "top_level_category":  "rest_api",
+        "sub_category":  "loading",
+        "severity":  "S2",
+        "pattern":  "\\b(WaitAndRetry|RetryAsync|Retry)\\b\\s*\\(",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Aggressive retries without jitter can amplify incidents during partial outages."
+    },
+    {
+        "id":  "NFR-API-009",
+        "title":  "No [ApiController] on controller class",
+        "category":  "reliability",
+        "top_level_category":  "rest_api",
+        "sub_category":  "performance",
+        "severity":  "S3",
+        "pattern":  "\\[Route\\s*\\(\"api/[^\\\"]+\"\\)\\][\\s\\S]{0,120}(public\\s+class\\s+[A-Za-z0-9_]+Controller\\b)(?![\\s\\S]{0,120}\\[ApiController\\])",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Skipping API controller conventions can weaken automatic validation and predictable behavior."
+    },
+    {
+        "id":  "NFR-API-010",
+        "title":  "Bulk endpoint without max batch constraint",
+        "category":  "scalability",
+        "top_level_category":  "rest_api",
+        "sub_category":  "loading",
+        "severity":  "S2",
+        "pattern":  "\\b(Bulk|Batch)\\b[\\s\\S]{0,260}(IEnumerable\u003c|List\u003c)(?![\\s\\S]{0,260}\\b(Max|Limit|Take|Chunk)\\b)",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Unbounded batch processing causes bursty CPU and memory consumption."
+    },
+    {
+        "id":  "NFR-API-011",
+        "title":  "No rate limiting middleware configured",
+        "category":  "scalability",
+        "top_level_category":  "rest_api",
+        "sub_category":  "loading",
+        "severity":  "S2",
+        "pattern":  "\\b(UseEndpoints|MapControllers|app\\.Run)\\b(?![\\s\\S]{0,300}\\bUseRateLimiter\\b)",
+        "include_globs":  [
+                              "Program.cs",
+                              "Startup.cs",
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Lack of admission control can let traffic spikes overwhelm service capacity."
+    },
+    {
+        "id":  "NFR-API-012",
+        "title":  "Endpoint reads request body synchronously",
+        "category":  "performance",
+        "top_level_category":  "rest_api",
+        "sub_category":  "concurrency",
+        "severity":  "S2",
+        "pattern":  "\\b(Request\\.Body|StreamReader\\s*\\([^\\)]*Request\\.Body[^\\)]*\\))[\\s\\S]{0,200}\\b(ReadToEnd\\s*\\(|Read\\s*\\()",
+        "include_globs":  [
+                              "*.cs"
+                          ],
+        "exclude_globs":  [
+                              "**/bin/**",
+                              "**/obj/**",
+                              "**/*Tests*.cs"
+                          ],
+        "rationale":  "Synchronous body reads block worker threads and reduce concurrent request capacity."
+    }
+]

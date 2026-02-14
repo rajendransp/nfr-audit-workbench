@@ -81,6 +81,99 @@ Run scan:
 python nfr_scan.py --path C:developmentmy-service
 ```
 
+Use a specific rule pack:
+
+```powershell
+python nfr_scan.py --path C:developmentmy-service --rules rules/dotnet_rules.json
+python nfr_scan.py --path C:developmentmy-frontend --rules rules/frontend_rules.json
+python nfr_scan.py --path C:developmentmy-api --rules rules/rest_api_rules.json
+```
+
+Run all packs together:
+
+```powershell
+python nfr_scan.py --path C:developmentmy-repo --rules rules/all_rules.json
+```
+
+Config-driven defaults:
+
+-   The scanner loads `nfr_scan_config.json` by default.
+-   You can use another config file with `--config <path>`.
+-   Precedence is: `CLI argument` > `config file` > built-in default.
+
+Run all findings through Ollama in batches without prompts:
+
+```powershell
+python nfr_scan.py --path C:developmentmy-repo --rules rules/all_rules.json --max-llm 120 --auto-continue-batches
+```
+
+Ignore folders/files during scan (gitignore-like simple globs):
+
+```powershell
+python nfr_scan.py --path C:developmentmy-repo --rules rules/all_rules.json --ignore-file .nfrignore
+```
+
+Notes:
+
+-   `.nfrignore` is read from the scan root (`--path`) by default.
+-   Supports comments (`#`) and glob-style patterns (for example `node_modules/`, `dist/`, `**/*.min.js`).
+-   Negation patterns (`!pattern`) are currently not supported.
+
+LLM batching behavior:
+
+-   `--max-llm` is the LLM batch size (default `120`).
+-   `--regex-workers` controls regex rule parallelism (default `1`).
+-   `--llm-workers` controls parallel Ollama requests per batch (default `1`).
+-   For local stability, start with `--llm-workers 2` and increase gradually if hardware has headroom.
+-   `--prioritize-llm-queue` (default on) sends higher-priority findings first (S1/S2 and higher-confidence hints).
+-   `--dedup-before-llm` (default on) clusters similar findings (same file/function/rule/match) and sends representative items to LLM.
+-   `--use-llm-cache` (default on) caches LLM decisions across runs in `--llm-cache-file` (default `llm_review_cache.json` under output dir).
+-   `--adaptive-llm-workers` (default on) reduces workers on timeout/fallback spikes and slowly increases after stable batches.
+-   Incremental mode is on by default (`--incremental`): only new/changed findings are sent to LLM versus persisted baseline.
+-   Use `--no-incremental` for full scan mode.
+-   Baseline persistence defaults to `<output-dir>/<baseline-dir>/<project>.json` where `--baseline-dir` defaults to `baselines`.
+-   Timeout/retry controls: `--llm-connect-timeout-seconds` (default `20`), `--llm-read-timeout-seconds` (default `120`), `--llm-retries` (default `2`), `--llm-retry-backoff-seconds` (default `1.5`).
+-   Retries are used for retriable failures (timeout, connection errors, HTTP `429`, HTTP `5xx`). Non-retriable failures are logged and fallback review is used.
+-   After each batch, interactive runs ask whether to continue with the next batch.
+-   Use `--auto-continue-batches` for unattended runs (process all batches automatically).
+-   Use `--max-llm 0` to skip Ollama review.
+-   Queue/progress is written to `findings_queue__<project>__<timestamp>.json`.
+-   Resume a stopped run with `--resume-queue <path-to-findings_queue__...json>`; pending findings continue in the same output files.
+-   When `--resume-queue` is used, the queue state is the source of truth for pending/reviewed items and original output file names.
+-   Prompt slimming is automatic: S3/S4 findings send reduced snippet context to LLM; S1/S2 keep full context.
+
+Default parameter values (from `nfr_scan_config.json`):
+
+-   `path`: `.`
+-   `rules`: `rules/dotnet_rules.json`
+-   `output_dir`: `reports`
+-   `context_lines`: `20`
+-   `max_findings`: `300`
+-   `regex_workers`: `1`
+-   `max_llm`: `120`
+-   `auto_continue_batches`: `false`
+-   `llm_workers`: `1`
+-   `llm_retries`: `2`
+-   `llm_retry_backoff_seconds`: `1.5`
+-   `llm_connect_timeout_seconds`: `20.0`
+-   `llm_read_timeout_seconds`: `120.0`
+-   `llm_cache_file`: `llm_review_cache.json`
+-   `use_llm_cache`: `true`
+-   `dedup_before_llm`: `true`
+-   `prioritize_llm_queue`: `true`
+-   `adaptive_llm_workers`: `true`
+-   `resume_queue`: `""`
+-   `temperature`: `0.1`
+-   `baseline`: `""`
+-   `only_new`: `false`
+-   `incremental`: `true`
+-   `baseline_dir`: `baselines`
+-   `include_roslyn`: `false`
+-   `dotnet_target`: `""`
+-   `dotnet_configuration`: `Debug`
+-   `dotnet_timeout_seconds`: `900`
+-   `ignore_file`: `.nfrignore`
+
 With Roslyn ingestion:
 
 ```powershell
@@ -116,8 +209,11 @@ Compatibility pointers are also updated:
 Finding objects include:
 
 -   source metadata: `source`, `language`, `file_type`
+-   grouping metadata: `top_level_category` (`dotnet`/`front_end`/`rest_api`), `sub_category` (`concurrency`/`performance`/`loading`)
 -   triage metadata: `severity`, `confidence`, `effort`, `benefit`, `quick_win`
+-   reliability metadata: `llm_error_kind`, `llm_attempts`, `llm_retried`
 -   recommendation metadata: `why`, `recommendation`, `testing_notes`, `patch`
+-   throughput summary metadata (`summary.throughput`): stage timings (`regex`, `roslyn`, `llm`, `total`) and LLM latency stats (`avg_ms`, `p50_ms`, `p95_ms`)
 
 ## UI usage
 
@@ -135,7 +231,9 @@ UI capabilities:
 
 -   Findings file dropdown for versioned results.
 -   Upload findings JSON and explore it (`uploaded__<timestamp>__<name>.json`).
--   Severity/source/quick-win/search filters.
+-   Severity/source/quick-win/fallback/search filters.
+-   Top-level and sub-category filters (`dotnet`/`front_end`/`rest_api` and `concurrency`/`performance`/`loading`).
+-   Sortable table columns (including top-level/sub-category grouping columns).
 -   Flexible grid columns and pagination.
 -   Resizable details panel.
 -   Syntax-highlighted snippet + patch viewer.

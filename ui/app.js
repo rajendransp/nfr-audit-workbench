@@ -5,12 +5,16 @@ var state = {
   currentPage: 1,
   pageSize: 20,
   currentFile: "findings.json",
+  sortCol: "severity",
+  sortDir: "asc",
   columns: {
     severity: true,
     source: true,
     quickWin: true,
     effortBenefit: true,
     rule: true,
+    topLevelCategory: true,
+    subCategory: true,
     language: true,
     fileType: true,
     location: true,
@@ -25,6 +29,9 @@ var state = {
 var severityEl = document.getElementById("severityFilter");
 var sourceEl = document.getElementById("sourceFilter");
 var quickWinEl = document.getElementById("quickWinFilter");
+var fallbackEl = document.getElementById("fallbackFilter");
+var topLevelEl = document.getElementById("topLevelFilter");
+var subCategoryEl = document.getElementById("subCategoryFilter");
 var searchEl = document.getElementById("searchInput");
 var rowsEl = document.getElementById("rows");
 var emptyEl = document.getElementById("empty");
@@ -37,6 +44,8 @@ var uploadEl = document.getElementById("uploadInput");
 var columnTogglesEl = document.getElementById("columnToggles");
 var snippetHeightEl = document.getElementById("snippetHeight");
 var snippetHeightValueEl = document.getElementById("snippetHeightValue");
+var patchHeightEl = document.getElementById("patchHeight");
+var patchHeightValueEl = document.getElementById("patchHeightValue");
 var splitterEl = document.getElementById("splitter");
 var splitEl = document.querySelector(".split");
 var pageSizeEl = document.getElementById("pageSize");
@@ -47,7 +56,7 @@ var nextPageBtnEl = document.getElementById("nextPageBtn");
 var lastPageBtnEl = document.getElementById("lastPageBtn");
 state.pageSize = Number(pageSizeEl && pageSizeEl.value ? pageSizeEl.value : 20) || 20;
 
-var COLUMN_ORDER = ["severity","source","quickWin","effortBenefit","rule","language","fileType","location","confidence","recommendation","snippet","patch","title"];
+var COLUMN_ORDER = ["severity","source","quickWin","effortBenefit","rule","topLevelCategory","subCategory","language","fileType","location","confidence","recommendation","snippet","patch","title"];
 
 function setStatus(message) {
   statusEl.textContent = message;
@@ -81,12 +90,53 @@ function quickWinOf(f) {
   return Boolean(get(f, ["llm_review", "quick_win"], false));
 }
 
+function fallbackOf(f) {
+  return Boolean(get(f, ["llm_transport", "fallback_used"], false));
+}
+
 function effortOf(f) {
   return String(get(f, ["llm_review", "effort"], "medium"));
 }
 
 function benefitOf(f) {
   return String(get(f, ["llm_review", "benefit"], "medium"));
+}
+
+function topLevelOf(f) {
+  return String(f.top_level_category || "unknown").toLowerCase();
+}
+
+function subCategoryOf(f) {
+  return String(f.sub_category || "unknown").toLowerCase();
+}
+
+function setSelectOptions(selectEl, values, keepValue) {
+  if (!selectEl) return;
+  var sorted = values.slice().sort();
+  var html = '<option value="ALL">All</option>';
+  for (var i = 0; i < sorted.length; i++) {
+    html += '<option value="' + esc(sorted[i]) + '">' + esc(sorted[i]) + "</option>";
+  }
+  selectEl.innerHTML = html;
+  if (keepValue && sorted.indexOf(keepValue) !== -1) selectEl.value = keepValue;
+  else selectEl.value = "ALL";
+}
+
+function refreshCategoryFilters() {
+  var prevTop = topLevelEl ? topLevelEl.value : "ALL";
+  var prevSub = subCategoryEl ? subCategoryEl.value : "ALL";
+  var topLevels = {};
+  for (var i = 0; i < state.all.length; i++) topLevels[topLevelOf(state.all[i])] = true;
+  setSelectOptions(topLevelEl, Object.keys(topLevels), prevTop !== "ALL" ? prevTop : "");
+
+  var selectedTop = topLevelEl ? topLevelEl.value : "ALL";
+  var subs = {};
+  for (var j = 0; j < state.all.length; j++) {
+    var f = state.all[j];
+    if (selectedTop !== "ALL" && topLevelOf(f) !== selectedTop) continue;
+    subs[subCategoryOf(f)] = true;
+  }
+  setSelectOptions(subCategoryEl, Object.keys(subs), prevSub !== "ALL" ? prevSub : "");
 }
 
 function renderCards(summary) {
@@ -134,6 +184,8 @@ function rowTemplate(f, i) {
   html += td("quickWin", quickWin ? '<span class="pill-yes">Yes</span>' : '<span class="pill-no">No</span>');
   html += td("effortBenefit", '<span class="mini">' + esc(effortBenefit) + '</span>');
   html += td("rule", esc(f.rule_id || "-"));
+  html += td("topLevelCategory", esc(topLevelOf(f)));
+  html += td("subCategory", esc(subCategoryOf(f)));
   html += td("language", esc(f.language || "unknown"));
   html += td("fileType", esc(f.file_type || "unknown"));
   html += td("location", '<code>' + esc(loc) + '</code>');
@@ -161,7 +213,7 @@ function applyColumnVisibility() {
 
 function renderColumnToggles() {
   var labels = {
-    severity:"Severity",source:"Source",quickWin:"Quick Win",effortBenefit:"Effort/Benefit",rule:"Rule",language:"Language",fileType:"File Type",location:"Location",confidence:"Confidence",recommendation:"Recommendation",snippet:"Snippet",patch:"Patch",title:"Title"
+    severity:"Severity",source:"Source",quickWin:"Quick Win",effortBenefit:"Effort/Benefit",rule:"Rule",topLevelCategory:"Top Level",subCategory:"Sub Category",language:"Language",fileType:"File Type",location:"Location",confidence:"Confidence",recommendation:"Recommendation",snippet:"Snippet",patch:"Patch",title:"Title"
   };
   var html = "";
   for (var i = 0; i < COLUMN_ORDER.length; i++) {
@@ -209,6 +261,54 @@ function renderTable() {
   updatePager();
 }
 
+function sortValue(f, col) {
+  if (col === "severity") return sevOf(f);
+  if (col === "source") return String(f.source || "unknown");
+  if (col === "quickWin") return quickWinOf(f) ? "1" : "0";
+  if (col === "effortBenefit") return effortOf(f) + "/" + benefitOf(f);
+  if (col === "rule") return String(f.rule_id || "");
+  if (col === "topLevelCategory") return topLevelOf(f);
+  if (col === "subCategory") return subCategoryOf(f);
+  if (col === "language") return String(f.language || "");
+  if (col === "fileType") return String(f.file_type || "");
+  if (col === "location") return String(f.file || "") + ":" + String(f.line || 1);
+  if (col === "confidence") return String(get(f, ["llm_review", "confidence"], 0));
+  if (col === "recommendation") return String(get(f, ["llm_review", "recommendation"], ""));
+  if (col === "snippet") return String(f.snippet || f.match_text || "");
+  if (col === "patch") return get(f, ["llm_review", "patch"], "unknown") === "unknown" ? "0" : "1";
+  if (col === "title") return String(get(f, ["llm_review", "title"], f.rule_title || ""));
+  return "";
+}
+
+function sortShown() {
+  var col = state.sortCol || "severity";
+  var dir = state.sortDir === "desc" ? -1 : 1;
+  state.shown.sort(function (a, b) {
+    if (col === "confidence") {
+      var av = Number(get(a, ["llm_review", "confidence"], 0)) || 0;
+      var bv = Number(get(b, ["llm_review", "confidence"], 0)) || 0;
+      return dir * (av - bv);
+    }
+    if (col === "severity") {
+      var rank = {"S1":1,"S2":2,"S3":3,"S4":4};
+      return dir * ((rank[sevOf(a)] || 9) - (rank[sevOf(b)] || 9));
+    }
+    var sa = String(sortValue(a, col)).toLowerCase();
+    var sb = String(sortValue(b, col)).toLowerCase();
+    if (sa < sb) return -1 * dir;
+    if (sa > sb) return 1 * dir;
+    return 0;
+  });
+}
+
+function refreshSortIndicators() {
+  var headers = document.querySelectorAll("th[data-col]");
+  for (var i = 0; i < headers.length; i++) {
+    var c = headers[i].getAttribute("data-col");
+    headers[i].setAttribute("data-sort", c === state.sortCol ? state.sortDir : "none");
+  }
+}
+
 function includeByFilters(f) {
   var sev = sevOf(f);
   var source = String(f.source || "unknown").toLowerCase();
@@ -218,11 +318,17 @@ function includeByFilters(f) {
   var qf = quickWinEl.value;
   if (qf === "YES" && !quickWinOf(f)) return false;
   if (qf === "NO" && quickWinOf(f)) return false;
+  var ff = fallbackEl.value;
+  if (ff === "YES" && !fallbackOf(f)) return false;
+  if (ff === "NO" && fallbackOf(f)) return false;
+  if (topLevelEl && topLevelEl.value !== "ALL" && topLevelOf(f) !== topLevelEl.value) return false;
+  if (subCategoryEl && subCategoryEl.value !== "ALL" && subCategoryOf(f) !== subCategoryEl.value) return false;
 
   var q = String(searchEl.value || "").trim().toLowerCase();
   if (!q) return true;
   var hay = [
     f.rule_id, f.rule_title, f.file, f.match_text, f.language, f.file_type,
+    f.top_level_category, f.sub_category,
     get(f,["llm_review","title"],""), get(f,["llm_review","why"],""), get(f,["llm_review","recommendation"],"")
   ].join(" ").toLowerCase();
   return hay.indexOf(q) !== -1;
@@ -230,8 +336,10 @@ function includeByFilters(f) {
 
 function applyFilters() {
   state.shown = state.all.filter(includeByFilters);
+  sortShown();
   state.currentPage = 1;
   renderTable();
+  refreshSortIndicators();
   setStatus("Showing " + state.shown.length + " / " + state.all.length + " findings");
 }
 
@@ -275,10 +383,24 @@ function highlightCode(text, language) {
   return html;
 }
 
-function detailCodeBlock(title, text, mode, language) {
+function renderSnippetWithMatch(text, language, matchText) {
+  var lines = String(text || "").split(/\r?\n/);
+  var needle = String(matchText || "").trim();
+  var out = [];
+  for (var i = 0; i < lines.length; i++) {
+    var raw = lines[i];
+    var code = highlightCode(raw, language);
+    if (needle && raw.indexOf(needle) !== -1) out.push('<span class="line-hit">' + code + "</span>");
+    else out.push(code);
+  }
+  return out.join("\n");
+}
+
+function detailCodeBlock(title, text, mode, language, matchText) {
   if (text == null || text === "") return "";
-  var rendered = mode === "diff" ? highlightDiff(text) : highlightCode(text, language);
-  return '<section class="block"><h3>' + esc(title) + '</h3><pre class="pre code-block"><code>' + rendered + "</code></pre></section>";
+  var rendered = mode === "diff" ? highlightDiff(text) : renderSnippetWithMatch(text, language, matchText);
+  var blockType = mode === "diff" ? "patch-block" : "snippet-block";
+  return '<section class="block"><h3>' + esc(title) + '</h3><pre class="pre code-block ' + blockType + '"><code>' + rendered + "</code></pre></section>";
 }
 
 function showDetails(f) {
@@ -288,14 +410,15 @@ function showDetails(f) {
   content += detailBlock("Title", lr.title || f.rule_title || "-");
   content += detailBlock("Severity", sevOf(f));
   content += detailBlock("Rule", (f.rule_id || "-") + " (" + (f.source || "unknown") + ")");
+  content += detailBlock("Grouping", topLevelOf(f) + " / " + subCategoryOf(f));
   content += detailBlock("Language / File Type", (f.language || "unknown") + " / " + (f.file_type || "unknown"));
   content += detailBlock("Effort vs Benefit", effortOf(f) + " / " + benefitOf(f));
   content += detailBlock("Quick Win", quickWinOf(f) ? "Yes" : "No");
   content += detailBlock("Location", loc);
   content += detailBlock("Why", lr.why || "-", false);
   content += detailBlock("Recommendation", lr.recommendation || "-", false);
-  content += detailCodeBlock("Code Snippet", f.snippet || f.match_text || "", "code", f.language || "unknown");
-  if (lr.patch && String(lr.patch).toLowerCase() !== "unknown") content += detailCodeBlock("Suggested Patch", lr.patch, "diff", "diff");
+  content += detailCodeBlock("Code Snippet", f.snippet || f.match_text || "", "code", f.language || "unknown", f.match_text || "");
+  if (lr.patch && String(lr.patch).toLowerCase() !== "unknown") content += detailCodeBlock("Suggested Patch", lr.patch, "diff", "diff", "");
   detailsBodyEl.innerHTML = content;
 }
 
@@ -337,6 +460,7 @@ function loadData(fileName) {
       var json = payload.data || {};
       var findings = json.findings || [];
       state.all = findings.filter(function (f) { return get(f, ["llm_review", "isIssue"], true) !== false; });
+      refreshCategoryFilters();
       renderCards(json.summary || {});
       applyFilters();
       setStatus("Loaded " + state.all.length + " finding(s) from " + state.currentFile);
@@ -368,6 +492,12 @@ uploadEl.addEventListener("change", function () { uploadFile(uploadEl.files[0]).
 severityEl.addEventListener("change", applyFilters);
 sourceEl.addEventListener("change", applyFilters);
 quickWinEl.addEventListener("change", applyFilters);
+fallbackEl.addEventListener("change", applyFilters);
+topLevelEl.addEventListener("change", function () {
+  refreshCategoryFilters();
+  applyFilters();
+});
+subCategoryEl.addEventListener("change", applyFilters);
 searchEl.addEventListener("input", applyFilters);
 
 columnTogglesEl.addEventListener("change", function (e) {
@@ -382,6 +512,18 @@ rowsEl.addEventListener("click", function (e) {
   if (!tr) return;
   var i = Number(tr.getAttribute("data-i"));
   showDetails(state.pageRows[i]);
+});
+
+document.querySelector("thead").addEventListener("click", function (e) {
+  var th = e.target.closest("th[data-col]");
+  if (!th) return;
+  var col = th.getAttribute("data-col");
+  if (!col) return;
+  if (state.sortCol === col) state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+  else { state.sortCol = col; state.sortDir = "asc"; }
+  sortShown();
+  renderTable();
+  refreshSortIndicators();
 });
 
 pageSizeEl.addEventListener("change", function () {
@@ -429,6 +571,17 @@ function applySnippetHeight(px) {
   try { localStorage.setItem("nfr_snippet_height", String(h)); } catch (e) {}
 }
 
+function applyPatchHeight(px) {
+  var h = Number(px);
+  if (!h || isNaN(h)) return;
+  if (h < 180) h = 180;
+  if (h > 900) h = 900;
+  document.documentElement.style.setProperty("--patch-max-height", h + "px");
+  if (patchHeightEl) patchHeightEl.value = String(h);
+  if (patchHeightValueEl) patchHeightValueEl.textContent = h + "px";
+  try { localStorage.setItem("nfr_patch_height", String(h)); } catch (e) {}
+}
+
 function initSplitter() {
   if (!splitterEl || !splitEl) return;
   try {
@@ -467,7 +620,21 @@ function initSnippetHeight() {
   }
 }
 
+function initPatchHeight() {
+  var stored = null;
+  try { stored = localStorage.getItem("nfr_patch_height"); } catch (e) {}
+  if (stored) applyPatchHeight(stored);
+  else applyPatchHeight(patchHeightEl ? patchHeightEl.value : 280);
+
+  if (patchHeightEl) {
+    patchHeightEl.addEventListener("input", function () {
+      applyPatchHeight(patchHeightEl.value);
+    });
+  }
+}
+
 renderColumnToggles();
 initSplitter();
 initSnippetHeight();
+initPatchHeight();
 loadFileOptions().then(function () { return loadData(state.currentFile); }).catch(showError);

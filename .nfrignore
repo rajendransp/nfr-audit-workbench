@@ -1,0 +1,13 @@
+# NFR scanner ignore patterns (simple glob-style).
+# Lines starting with '#' are comments.
+# Negation patterns (e.g. !foo) are not supported.
+
+.git/
+.venv/
+node_modules/
+dist/
+build/
+coverage/
+bin/
+obj/
+reports/

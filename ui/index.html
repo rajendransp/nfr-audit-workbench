@@ -59,6 +59,26 @@
           <option value="NO">No</option>
         </select>
       </div>
+      <div class="field">
+        <label for="fallbackFilter">LLM Fallback</label>
+        <select id="fallbackFilter">
+          <option value="ALL">All</option>
+          <option value="YES">Yes</option>
+          <option value="NO">No</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="topLevelFilter">Top Level</label>
+        <select id="topLevelFilter">
+          <option value="ALL">All</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="subCategoryFilter">Sub Category</label>
+        <select id="subCategoryFilter">
+          <option value="ALL">All</option>
+        </select>
+      </div>
       <div class="field grow">
         <label for="searchInput">Search</label>
         <input id="searchInput" type="text" placeholder="rule, file, why, recommendation" />
@@ -74,6 +94,11 @@
         <label for="snippetHeight">Snippet Size</label>
         <input id="snippetHeight" type="range" min="180" max="900" step="20" value="280" />
         <div id="snippetHeightValue" class="mini">280px</div>
+      </div>
+      <div class="field">
+        <label for="patchHeight">Patch Size</label>
+        <input id="patchHeight" type="range" min="180" max="900" step="20" value="280" />
+        <div id="patchHeightValue" class="mini">280px</div>
       </div>
       <div class="field">
         <label>Status</label>
@@ -92,6 +117,8 @@
                 <th data-col="quickWin">Quick Win</th>
                 <th data-col="effortBenefit">Effort vs Benefit</th>
                 <th data-col="rule">Rule</th>
+                <th data-col="topLevelCategory">Top Level</th>
+                <th data-col="subCategory">Sub Category</th>
                 <th data-col="language">Language</th>
                 <th data-col="fileType">File Type</th>
                 <th data-col="location">Location</th>

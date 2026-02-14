@@ -5,7 +5,10 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
@@ -21,6 +24,7 @@ except Exception:  # pragma: no cover
 SEVERITY_ORDER = {"S1": 0, "S2": 1, "S3": 2, "S4": 3}
 SEVERITY_LEVEL = {"S1": "error", "S2": "warning", "S3": "note", "S4": "note"}
 ROSLYN_LEVEL_TO_S = {"error": "S1", "warning": "S2", "note": "S3", "none": "S4"}
+DEFAULT_CONFIG_PATH = "nfr_scan_config.json"
 
 SYSTEM_PROMPT = (
     "You are a senior .NET reliability/performance reviewer. "
@@ -65,6 +69,11 @@ def load_env():
 
 def parse_args():
     parser = argparse.ArgumentParser(description="NFR Audit Workbench scan + Ollama review")
+    parser.add_argument(
+        "--config",
+        default=DEFAULT_CONFIG_PATH,
+        help=f"Optional config JSON path (default: {DEFAULT_CONFIG_PATH})",
+    )
     parser.add_argument("--path", default=".", help="Repository or service path to scan")
     parser.add_argument(
         "--rules",
@@ -89,10 +98,85 @@ def parse_args():
         help="Cap regex pre-scan findings before LLM review",
     )
     parser.add_argument(
+        "--regex-workers",
+        type=int,
+        default=1,
+        help="Concurrent workers for regex rule execution (1 keeps sequential behavior).",
+    )
+    parser.add_argument(
         "--max-llm",
         type=int,
         default=120,
-        help="Max findings sent to Ollama",
+        help="LLM batch size. Use 0 to skip Ollama review.",
+    )
+    parser.add_argument(
+        "--auto-continue-batches",
+        action="store_true",
+        help="Process all LLM batches without interactive y/n prompts.",
+    )
+    parser.add_argument(
+        "--llm-workers",
+        type=int,
+        default=1,
+        help="Concurrent Ollama requests per batch (1 keeps sequential behavior).",
+    )
+    parser.add_argument(
+        "--llm-retries",
+        type=int,
+        default=2,
+        help="Retries for retriable Ollama failures (timeout/connection/5xx/429).",
+    )
+    parser.add_argument(
+        "--llm-retry-backoff-seconds",
+        type=float,
+        default=1.5,
+        help="Base backoff seconds for Ollama retries (exponential: base, 2x, 4x...).",
+    )
+    parser.add_argument(
+        "--llm-connect-timeout-seconds",
+        type=float,
+        default=20.0,
+        help="Connect timeout for Ollama HTTP requests.",
+    )
+    parser.add_argument(
+        "--llm-read-timeout-seconds",
+        type=float,
+        default=120.0,
+        help="Read timeout for Ollama HTTP requests.",
+    )
+    parser.add_argument(
+        "--llm-cache-file",
+        default="llm_review_cache.json",
+        help="LLM review cache file (relative to output dir unless absolute path).",
+    )
+    parser.add_argument(
+        "--use-llm-cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable/disable LLM review cache across runs.",
+    )
+    parser.add_argument(
+        "--dedup-before-llm",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Cluster similar findings and send representative items to LLM.",
+    )
+    parser.add_argument(
+        "--prioritize-llm-queue",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Prioritize S1/S2 and higher-confidence findings before S3/S4.",
+    )
+    parser.add_argument(
+        "--adaptive-llm-workers",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Auto-tune llm-workers: reduce on timeout spikes, slowly increase when stable.",
+    )
+    parser.add_argument(
+        "--resume-queue",
+        default="",
+        help="Resume an existing run from findings_queue__*.json",
     )
     parser.add_argument(
         "--temperature",
@@ -103,12 +187,23 @@ def parse_args():
     parser.add_argument(
         "--baseline",
         default="",
-        help="Optional baseline findings JSON path",
+        help="Optional baseline findings JSON path (defaults to auto baseline per scan path).",
     )
     parser.add_argument(
         "--only-new",
         action="store_true",
-        help="Report only findings not present in baseline",
+        help="Legacy alias for incremental mode (kept for compatibility).",
+    )
+    parser.add_argument(
+        "--incremental",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Review only new/changed findings against persisted baseline (default on).",
+    )
+    parser.add_argument(
+        "--baseline-dir",
+        default="baselines",
+        help="Baseline directory under output-dir for per-scan-path baseline persistence.",
     )
     parser.add_argument(
         "--include-roslyn",
@@ -131,7 +226,55 @@ def parse_args():
         default=900,
         help="Timeout for dotnet analyzer build",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--ignore-file",
+        default=".nfrignore",
+        help="Ignore file path (relative to --path by default). Set empty to disable.",
+    )
+    args = parser.parse_args()
+    config = load_scan_config(args.config)
+    passed_flags = get_passed_cli_flags(sys.argv)
+    return apply_config_defaults(args, config, passed_flags)
+
+
+def get_passed_cli_flags(argv):
+    passed = set()
+    for token in argv[1:]:
+        if not token.startswith("--"):
+            continue
+        key = token.split("=", 1)[0]
+        if key.startswith("--no-"):
+            passed.add(key[5:].replace("-", "_"))
+            continue
+        passed.add(key[2:].replace("-", "_"))
+    return passed
+
+
+def load_scan_config(config_path):
+    if not config_path:
+        return {}
+    p = Path(config_path)
+    if not p.is_absolute():
+        p = Path.cwd() / p
+    if not p.exists() or not p.is_file():
+        return {}
+    data = json.loads(p.read_text(encoding="utf-8", errors="ignore"))
+    if not isinstance(data, dict):
+        raise ValueError("Config JSON must be an object")
+    return data
+
+
+def apply_config_defaults(args, config, passed_flags):
+    if not config:
+        return args
+    for key, value in config.items():
+        attr = str(key).replace("-", "_")
+        if attr in passed_flags:
+            continue
+        if not hasattr(args, attr):
+            continue
+        setattr(args, attr, value)
+    return args
 
 
 def load_rules(path):
@@ -142,10 +285,69 @@ def load_rules(path):
     return data
 
 
-def _run_rg(path, rule):
+def _normalize_ignore_pattern(raw):
+    pattern = str(raw or "").strip().replace("\\", "/")
+    if not pattern:
+        return []
+    if pattern.startswith("./"):
+        pattern = pattern[2:]
+    if pattern.startswith("/"):
+        pattern = pattern[1:]
+
+    out = {pattern}
+    trimmed = pattern.rstrip("/")
+
+    if pattern.endswith("/"):
+        out.add(trimmed)
+        out.add(f"{trimmed}/**")
+
+    if "/" not in trimmed:
+        out.add(f"**/{trimmed}")
+        out.add(f"**/{trimmed}/**")
+    else:
+        out.add(f"{trimmed}/**")
+
+    return sorted(x for x in out if x and x != ".")
+
+
+def load_ignore_globs(scan_path, ignore_file):
+    if ignore_file is None:
+        return []
+    ignore_file = str(ignore_file).strip()
+    if not ignore_file:
+        return []
+
+    p = Path(ignore_file)
+    if not p.is_absolute():
+        p = Path(scan_path) / p
+    if (not p.exists() or not p.is_file()) and not Path(ignore_file).is_absolute():
+        fallback = Path(ignore_file)
+        if fallback.exists() and fallback.is_file():
+            p = fallback
+    if not p.exists() or not p.is_file():
+        return []
+
+    globs = []
+    for raw in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("!"):
+            continue
+        globs.extend(_normalize_ignore_pattern(line))
+    return sorted(set(globs))
+
+
+def _is_ignored_path(rel_path, ignore_globs):
+    if not ignore_globs:
+        return False
+    return any(fnmatch(rel_path, g) for g in ignore_globs)
+
+
+def _run_rg(path, rule, ignore_globs):
     rg_path = shutil.which("rg")
     if not rg_path:
-        return _run_regex_fallback(path, rule)
+        return _run_regex_fallback(path, rule, ignore_globs)
 
     cmd = [
         rg_path,
@@ -161,6 +363,8 @@ def _run_rg(path, rule):
     for glob in rule.get("include_globs", []):
         cmd.extend(["--glob", glob])
     for glob in rule.get("exclude_globs", []):
+        cmd.extend(["--glob", f"!{glob}"])
+    for glob in ignore_globs:
         cmd.extend(["--glob", f"!{glob}"])
 
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore")
@@ -186,7 +390,9 @@ def _run_rg(path, rule):
     return matches
 
 
-def _is_included(rel_path, include_globs, exclude_globs):
+def _is_included(rel_path, include_globs, exclude_globs, ignore_globs):
+    if _is_ignored_path(rel_path, ignore_globs):
+        return False
     include_ok = True
     if include_globs:
         include_ok = any(fnmatch(rel_path, g) for g in include_globs)
@@ -197,7 +403,7 @@ def _is_included(rel_path, include_globs, exclude_globs):
     return True
 
 
-def _run_regex_fallback(path, rule):
+def _run_regex_fallback(path, rule, ignore_globs):
     pattern = re.compile(rule["pattern"])
     include_globs = rule.get("include_globs", [])
     exclude_globs = rule.get("exclude_globs", [])
@@ -209,7 +415,7 @@ def _run_regex_fallback(path, rule):
             continue
 
         rel_path = file_path.relative_to(root).as_posix()
-        if not _is_included(rel_path, include_globs, exclude_globs):
+        if not _is_included(rel_path, include_globs, exclude_globs, ignore_globs):
             continue
 
         try:
@@ -345,14 +551,41 @@ def _project_name_from_scan_path(scan_path):
     return _safe_name(base or "project")
 
 
-def pre_scan(scan_path, rules, context_lines, max_findings):
+def pre_scan(scan_path, rules, context_lines, max_findings, ignore_globs, regex_workers=1):
     all_findings = []
     cache = {}
     total_rules = len(rules)
+    regex_workers = max(1, int(regex_workers or 1))
+    matches_by_rule = {}
+
+    if regex_workers == 1 or total_rules <= 1:
+        for idx, rule in enumerate(rules, start=1):
+            log_progress(f"Regex rule {idx}/{total_rules}: {rule['id']}")
+            matches = _run_rg(scan_path, rule, ignore_globs)
+            log_progress(f"Rule {rule['id']} produced {len(matches)} match(es)")
+            matches_by_rule[rule["id"]] = matches
+    else:
+        log_progress(f"Starting parallel regex pre-scan with workers={regex_workers} for {total_rules} rule(s)")
+        with ThreadPoolExecutor(max_workers=regex_workers) as executor:
+            future_to_rule = {
+                executor.submit(_run_rg, scan_path, rule, ignore_globs): rule
+                for rule in rules
+            }
+            done = 0
+            for future in as_completed(future_to_rule):
+                rule = future_to_rule[future]
+                matches_by_rule[rule["id"]] = future.result()
+                done += 1
+                if done % 5 == 0 or done == total_rules:
+                    log_progress(f"Regex execution progress: {done}/{total_rules} rule(s) completed")
+
+        for idx, rule in enumerate(rules, start=1):
+            matches = matches_by_rule.get(rule["id"], [])
+            log_progress(f"Regex rule {idx}/{total_rules}: {rule['id']}")
+            log_progress(f"Rule {rule['id']} produced {len(matches)} match(es)")
+
     for idx, rule in enumerate(rules, start=1):
-        log_progress(f"Regex rule {idx}/{total_rules}: {rule['id']}")
-        matches = _run_rg(scan_path, rule)
-        log_progress(f"Rule {rule['id']} produced {len(matches)} match(es)")
+        matches = matches_by_rule.get(rule["id"], [])
         for m in matches:
             snippet = _snippet(m["file"], m["line"], context_lines, cache)
             key = f"regex|{rule['id']}|{m['file']}|{m['line']}|{hashlib.sha1(m['match_text'].encode('utf-8', errors='ignore')).hexdigest()[:12]}"
@@ -363,6 +596,8 @@ def pre_scan(scan_path, rules, context_lines, max_findings):
                     "rule_id": rule["id"],
                     "rule_title": rule["title"],
                     "category": rule.get("category", "reliability"),
+                    "top_level_category": rule.get("top_level_category", "dotnet"),
+                    "sub_category": rule.get("sub_category", "performance"),
                     "default_severity": rule.get("severity", "S3"),
                     "rationale": rule.get("rationale", ""),
                     "file": m["file"],
@@ -442,7 +677,7 @@ def _run_roslyn_sarif(scan_path, output_dir, target, configuration, timeout_seco
     return None, (message or "dotnet build did not produce SARIF output")
 
 
-def _parse_roslyn_findings(sarif_path, scan_root, context_lines):
+def _parse_roslyn_findings(sarif_path, scan_root, context_lines, ignore_globs):
     cache = {}
     findings = []
     payload = json.loads(Path(sarif_path).read_text(encoding="utf-8", errors="ignore"))
@@ -477,6 +712,12 @@ def _parse_roslyn_findings(sarif_path, scan_root, context_lines):
             column = int(region.get("startColumn", 1))
 
             norm_path = _normalize_path(uri, scan_root)
+            try:
+                rel = Path(norm_path).resolve().relative_to(Path(scan_root).resolve()).as_posix()
+            except Exception:
+                rel = Path(norm_path).as_posix()
+            if _is_ignored_path(rel, ignore_globs):
+                continue
             snippet = _snippet(norm_path, line, context_lines, cache)
 
             rule_meta = rule_lookup.get(rid, {})
@@ -536,44 +777,148 @@ def _extract_json(text):
     raise ValueError("Could not parse JSON from LLM response")
 
 
-def review_with_ollama(findings, model, base_url, temperature):
-    reviewed = []
-    url = f"{base_url.rstrip('/')}/api/chat"
-    total = len(findings)
-    log_progress(f"Starting Ollama review for {total} finding(s) with model '{model}'.")
-
-    for idx, finding in enumerate(findings, start=1):
-        rule_payload = {
-            "id": finding["rule_id"],
-            "title": finding["rule_title"],
-            "category": finding["category"],
-            "default_severity": finding["default_severity"],
-            "rationale": finding["rationale"],
-            "source": finding.get("source", "unknown"),
-        }
-        prompt = USER_TEMPLATE.format(
-            rule_json=json.dumps(rule_payload, ensure_ascii=True),
-            file_path=finding["file"],
-            line=finding["line"],
-            snippet=finding["snippet"] or finding.get("match_text", ""),
-        )
-
-        body = {
-            "model": model,
-            "stream": False,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            "options": {"temperature": temperature},
-        }
-
+def _classify_ollama_error(exc):
+    if isinstance(exc, requests.exceptions.Timeout):
+        return True, "timeout"
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return True, "connection_error"
+    if isinstance(exc, requests.exceptions.HTTPError):
+        status = None
         try:
-            resp = requests.post(url, json=body, timeout=(20, 120))
+            status = exc.response.status_code if exc.response is not None else None
+        except Exception:
+            status = None
+        if status in {408, 429} or (status is not None and status >= 500):
+            return True, f"http_{status}"
+        return False, f"http_{status}" if status is not None else "http_error"
+    return False, exc.__class__.__name__
+
+
+def _slim_snippet_for_prompt(finding):
+    snippet = str(finding.get("snippet") or finding.get("match_text") or "")
+    sev = str(finding.get("default_severity", "S3")).upper()
+    if sev in {"S1", "S2"}:
+        return snippet
+
+    target_line = int(finding.get("line", 1) or 1)
+    lines = snippet.splitlines()
+    if not lines:
+        return snippet
+
+    parsed = []
+    for raw in lines:
+        m = re.match(r"^\s*(\d+):\s?(.*)$", raw)
+        if m:
+            parsed.append((int(m.group(1)), m.group(2)))
+        else:
+            parsed.append((None, raw))
+
+    center_idx = None
+    for idx, (ln, _) in enumerate(parsed):
+        if ln == target_line:
+            center_idx = idx
+            break
+    if center_idx is None:
+        center_idx = max(0, min(len(parsed) - 1, len(parsed) // 2))
+
+    start = max(0, center_idx - 4)
+    end = min(len(parsed), center_idx + 5)
+    selected = parsed[start:end]
+    out = []
+    for ln, body in selected:
+        if ln is None:
+            out.append(body)
+        else:
+            out.append(f"{ln:5d}: {body}")
+    slim = "\n".join(out)
+    if len(slim) > 2200:
+        slim = slim[:2200]
+    return slim
+
+
+def _review_single_finding(
+    finding,
+    model,
+    url,
+    temperature,
+    retries,
+    retry_backoff_seconds,
+    connect_timeout_seconds,
+    read_timeout_seconds,
+):
+    started = time.perf_counter()
+    rule_payload = {
+        "id": finding["rule_id"],
+        "title": finding["rule_title"],
+        "category": finding["category"],
+        "top_level_category": finding.get("top_level_category", "dotnet"),
+        "sub_category": finding.get("sub_category", "performance"),
+        "default_severity": finding["default_severity"],
+        "rationale": finding["rationale"],
+        "source": finding.get("source", "unknown"),
+    }
+    prompt = USER_TEMPLATE.format(
+        rule_json=json.dumps(rule_payload, ensure_ascii=True),
+        file_path=finding["file"],
+        line=finding["line"],
+        snippet=_slim_snippet_for_prompt(finding),
+    )
+
+    body = {
+        "model": model,
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        "options": {"temperature": temperature},
+    }
+
+    parsed = None
+    last_error_kind = ""
+    fallback_used = False
+    attempts_used = 0
+    attempts_total = max(0, int(retries)) + 1
+    for attempt in range(1, attempts_total + 1):
+        attempts_used = attempt
+        try:
+            resp = requests.post(
+                url,
+                json=body,
+                timeout=(float(connect_timeout_seconds), float(read_timeout_seconds)),
+            )
             resp.raise_for_status()
             content = resp.json().get("message", {}).get("content", "")
             parsed = _extract_json(content)
+            if attempt > 1:
+                log_progress(
+                    f"Ollama request recovered after retry for {finding.get('rule_id', 'unknown')} "
+                    f"at {finding.get('file', 'unknown')}:{finding.get('line', 1)} "
+                    f"(attempt {attempt}/{attempts_total})."
+                )
+            break
         except Exception as exc:
+            retriable, error_kind = _classify_ollama_error(exc)
+            last_error_kind = error_kind
+            context = (
+                f"{finding.get('rule_id', 'unknown')} at "
+                f"{finding.get('file', 'unknown')}:{finding.get('line', 1)}"
+            )
+            if retriable and attempt < attempts_total:
+                delay = max(0.0, float(retry_backoff_seconds)) * (2 ** (attempt - 1))
+                log_progress(
+                    f"Ollama request failed ({error_kind}) for {context}. "
+                    f"Attempt {attempt}/{attempts_total}. Retrying in {delay:.1f}s. Error: {exc}"
+                )
+                if delay > 0:
+                    time.sleep(delay)
+                continue
+
+            log_progress(
+                f"Ollama request failed ({error_kind}) for {context}. "
+                f"Attempt {attempt}/{attempts_total}. "
+                f"{'Non-retriable' if not retriable else 'Retries exhausted'}; using fallback review. Error: {exc}"
+            )
             parsed = {
                 "isIssue": True,
                 "severity": finding["default_severity"],
@@ -584,25 +929,97 @@ def review_with_ollama(findings, model, base_url, temperature):
                 "testing_notes": ["Re-run scan after ensuring Ollama model is available."],
                 "patch": "unknown",
             }
+            fallback_used = True
+            break
 
-        sev = str(parsed.get("severity") or finding["default_severity"] or "S3").upper()
-        if sev not in SEVERITY_ORDER:
-            sev = "S3"
-        parsed["severity"] = sev
-        parsed["effort"] = _normalize_effort(parsed.get("effort"))
-        parsed["benefit"] = _normalize_benefit(parsed.get("benefit"), sev)
-        if "quick_win" not in parsed:
-            parsed["quick_win"] = _infer_quick_win(sev, parsed["effort"], parsed["benefit"])
-        else:
-            parsed["quick_win"] = bool(parsed.get("quick_win"))
+    sev = str(parsed.get("severity") or finding["default_severity"] or "S3").upper()
+    if sev not in SEVERITY_ORDER:
+        sev = "S3"
+    parsed["severity"] = sev
+    parsed["effort"] = _normalize_effort(parsed.get("effort"))
+    parsed["benefit"] = _normalize_benefit(parsed.get("benefit"), sev)
+    if "quick_win" not in parsed:
+        parsed["quick_win"] = _infer_quick_win(sev, parsed["effort"], parsed["benefit"])
+    else:
+        parsed["quick_win"] = bool(parsed.get("quick_win"))
 
-        finding_out = dict(finding)
-        finding_out["llm_review"] = parsed
-        reviewed.append(finding_out)
-        if idx % 10 == 0 or idx == total:
-            log_progress(f"Ollama review progress: {idx}/{total}")
+    finding_out = dict(finding)
+    finding_out["llm_review"] = parsed
+    finding_out["llm_transport"] = {
+        "attempts": attempts_used,
+        "attempts_allowed": attempts_total,
+        "fallback_used": fallback_used,
+        "error_kind": last_error_kind,
+        "from_cache": False,
+        "recovered_after_retry": (not fallback_used and attempts_used > 1),
+        "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 2),
+    }
+    finding_out["llm_error_kind"] = last_error_kind
+    finding_out["llm_attempts"] = attempts_used
+    finding_out["llm_retried"] = attempts_used > 1
+    return finding_out
 
-    return reviewed
+
+def review_with_ollama(
+    findings,
+    model,
+    base_url,
+    temperature,
+    workers=1,
+    retries=2,
+    retry_backoff_seconds=1.5,
+    connect_timeout_seconds=20.0,
+    read_timeout_seconds=120.0,
+):
+    reviewed = []
+    url = f"{base_url.rstrip('/')}/api/chat"
+    total = len(findings)
+    workers = max(1, int(workers or 1))
+    log_progress(f"Starting Ollama review for {total} finding(s) with model '{model}' (workers={workers}).")
+
+    if workers == 1 or total <= 1:
+        for idx, finding in enumerate(findings, start=1):
+            reviewed.append(
+                _review_single_finding(
+                    finding,
+                    model,
+                    url,
+                    temperature,
+                    retries,
+                    retry_backoff_seconds,
+                    connect_timeout_seconds,
+                    read_timeout_seconds,
+                )
+            )
+            if idx % 10 == 0 or idx == total:
+                log_progress(f"Ollama review progress: {idx}/{total}")
+        return reviewed
+
+    ordered = [None] * total
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_idx = {
+            executor.submit(
+                _review_single_finding,
+                finding,
+                model,
+                url,
+                temperature,
+                retries,
+                retry_backoff_seconds,
+                connect_timeout_seconds,
+                read_timeout_seconds,
+            ): idx
+            for idx, finding in enumerate(findings)
+        }
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            ordered[idx] = future.result()
+            done += 1
+            if done % 10 == 0 or done == total:
+                log_progress(f"Ollama review progress: {done}/{total}")
+
+    return [x for x in ordered if x is not None]
 
 
 def load_baseline_keys(path):
@@ -615,6 +1032,244 @@ def load_baseline_keys(path):
         return {x.get("finding_key") for x in findings if isinstance(x, dict) and x.get("finding_key")}
     except Exception:
         return set()
+
+
+def _percentile(values, pct):
+    vals = sorted(float(v) for v in values if v is not None)
+    if not vals:
+        return 0.0
+    if len(vals) == 1:
+        return vals[0]
+    k = (len(vals) - 1) * (float(pct) / 100.0)
+    lo = int(k)
+    hi = min(lo + 1, len(vals) - 1)
+    if lo == hi:
+        return vals[lo]
+    frac = k - lo
+    return vals[lo] * (1 - frac) + vals[hi] * frac
+
+
+def _latency_stats_from_reviewed(items):
+    lat = [float((x.get("llm_transport", {}) or {}).get("elapsed_ms", 0.0)) for x in items]
+    lat = [x for x in lat if x > 0]
+    if not lat:
+        return {"count": 0, "avg_ms": 0.0, "p50_ms": 0.0, "p95_ms": 0.0}
+    return {
+        "count": len(lat),
+        "avg_ms": round(sum(lat) / len(lat), 2),
+        "p50_ms": round(_percentile(lat, 50), 2),
+        "p95_ms": round(_percentile(lat, 95), 2),
+    }
+
+
+def baseline_path_for_project(output_dir, baseline_dir, project_name):
+    return Path(output_dir) / baseline_dir / f"{project_name}.json"
+
+
+def write_baseline_file(path, findings, scan_meta):
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "scan": {
+            "project": scan_meta.get("project", ""),
+            "run_version": scan_meta.get("run_version", ""),
+            "scan_path": scan_meta.get("scan_path", ""),
+            "written_at": datetime.now().isoformat(timespec="seconds"),
+        },
+        "findings": [
+            {
+                "finding_key": f.get("finding_key"),
+                "rule_id": f.get("rule_id"),
+                "file": f.get("file"),
+                "line": f.get("line"),
+            }
+            for f in findings
+            if isinstance(f, dict) and f.get("finding_key")
+        ],
+    }
+    p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return p
+
+
+def _normalize_text_for_key(text):
+    value = str(text or "").lower()
+    value = re.sub(r"\s+", " ", value).strip()
+    if len(value) > 2000:
+        value = value[:2000]
+    return value
+
+
+def _llm_cache_key(finding):
+    raw = f"{finding.get('rule_id', 'unknown')}|{_normalize_text_for_key(finding.get('snippet') or finding.get('match_text') or '')}"
+    return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _resolve_cache_path(cache_file, output_dir):
+    p = Path(cache_file or "llm_review_cache.json")
+    if not p.is_absolute():
+        p = Path(output_dir) / p
+    return p
+
+
+def load_llm_cache(cache_path):
+    p = Path(cache_path)
+    if not p.exists() or not p.is_file():
+        return {}
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8", errors="ignore"))
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    return {}
+
+
+def save_llm_cache(cache_path, cache_data):
+    p = Path(cache_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
+
+
+def _source_confidence_hint(finding):
+    source = str(finding.get("source", "")).lower()
+    if source == "roslyn":
+        return 0.95
+    return 0.65
+
+
+def _priority_sort_key(finding):
+    sev = str(finding.get("default_severity", "S3")).upper()
+    sev_rank = SEVERITY_ORDER.get(sev, 2)
+    hint = finding.get("confidence_hint")
+    if hint is None:
+        hint = _source_confidence_hint(finding)
+    try:
+        hint = float(hint)
+    except Exception:
+        hint = 0.5
+    return (
+        sev_rank,
+        -hint,
+        str(finding.get("rule_id", "")),
+        str(finding.get("file", "")),
+        int(finding.get("line", 1) or 1),
+    )
+
+
+def _extract_function_hint(snippet):
+    text = str(snippet or "")
+    patterns = [
+        r"\b(?:public|private|protected|internal|static|async|virtual|override|sealed|partial|\s)+\s+[A-Za-z_][A-Za-z0-9_<>,\[\]\?]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+        r"\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+        r"\b([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*\([^)]*\)\s*=>",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text)
+        if m:
+            return m.group(1)
+    return "unknown_function"
+
+
+def build_llm_clusters(findings):
+    grouped = {}
+    order = 0
+    for f in findings:
+        func = _extract_function_hint(f.get("snippet", ""))
+        match_key = _normalize_text_for_key(f.get("match_text", ""))
+        if len(match_key) > 240:
+            match_key = match_key[:240]
+        key = (
+            str(f.get("rule_id", "unknown")),
+            str(f.get("file", "unknown")),
+            func,
+            match_key,
+        )
+        if key not in grouped:
+            grouped[key] = {
+                "cluster_id": f"cluster_{len(grouped) + 1}",
+                "members": [],
+                "order": order,
+            }
+            order += 1
+        grouped[key]["members"].append(f)
+
+    clusters = []
+    for g in grouped.values():
+        members = g["members"]
+        members_sorted = sorted(members, key=_priority_sort_key)
+        representative = members_sorted[0]
+        clusters.append(
+            {
+                "cluster_id": g["cluster_id"],
+                "representative": representative,
+                "members": members,
+                "order": g["order"],
+            }
+        )
+    return clusters
+
+
+def expand_cluster_review(rep_reviewed, cluster):
+    out = []
+    members = cluster.get("members", [])
+    for member in members:
+        item = dict(member)
+        item["llm_review"] = dict(rep_reviewed.get("llm_review", {}))
+        transport = dict(rep_reviewed.get("llm_transport", {}))
+        item["llm_transport"] = transport
+        item["llm_error_kind"] = rep_reviewed.get("llm_error_kind", "")
+        item["llm_attempts"] = rep_reviewed.get("llm_attempts", 0)
+        item["llm_retried"] = bool(rep_reviewed.get("llm_retried", False))
+        item["llm_cluster"] = {
+            "cluster_id": cluster.get("cluster_id"),
+            "cluster_size": len(members),
+            "representative_key": cluster.get("representative", {}).get("finding_key"),
+            "function_hint": _extract_function_hint(member.get("snippet", "")),
+        }
+        out.append(item)
+    return out
+
+
+def adapt_llm_workers(current_workers, max_workers, batch_reviewed, stable_batches):
+    if not batch_reviewed:
+        return current_workers, stable_batches
+    timeout_like = 0
+    fallback_used = 0
+    for item in batch_reviewed:
+        t = item.get("llm_transport", {}) or {}
+        if t.get("fallback_used"):
+            fallback_used += 1
+        kind = str(t.get("error_kind") or "")
+        if kind in {"timeout", "connection_error"} or kind.startswith("http_5") or kind == "http_429":
+            timeout_like += 1
+
+    total = len(batch_reviewed)
+    timeout_rate = timeout_like / total
+    fallback_rate = fallback_used / total
+
+    if current_workers > 1 and (timeout_rate >= 0.15 or fallback_rate >= 0.25):
+        new_workers = max(1, current_workers - 1)
+        if new_workers < current_workers:
+            log_progress(
+                f"Adaptive workers: reducing llm-workers {current_workers} -> {new_workers} "
+                f"(timeout_rate={timeout_rate:.2f}, fallback_rate={fallback_rate:.2f})"
+            )
+            return new_workers, 0
+        return current_workers, 0
+
+    if current_workers < max_workers and timeout_rate == 0.0 and fallback_rate <= 0.05:
+        stable_batches += 1
+        if stable_batches >= 2:
+            new_workers = min(max_workers, current_workers + 1)
+            if new_workers > current_workers:
+                log_progress(
+                    f"Adaptive workers: increasing llm-workers {current_workers} -> {new_workers} "
+                    f"after stable batches."
+                )
+                return new_workers, 0
+        return current_workers, stable_batches
+
+    return current_workers, 0
 
 
 def _module_key(path):
@@ -659,6 +1314,68 @@ def summarize(reviewed):
     }
 
 
+def write_queue_report(findings, status_by_key, reviewed, output_dir, scan_meta, roslyn_meta):
+    path = Path(output_dir) / scan_meta["queue_file"]
+    payload = {
+        "scan": scan_meta,
+        "roslyn": roslyn_meta,
+        "summary": {
+            "total_findings": len(findings),
+            "reviewed_count": sum(1 for f in findings if status_by_key.get(f["finding_key"]) == "reviewed"),
+            "pending_count": sum(1 for f in findings if status_by_key.get(f["finding_key"]) != "reviewed"),
+        },
+        "status_by_key": status_by_key,
+        "reviewed": reviewed,
+        "findings": findings,
+        "items": [
+            {
+                "finding_key": f.get("finding_key"),
+                "status": status_by_key.get(f.get("finding_key"), "pending"),
+                "source": f.get("source", "unknown"),
+                "rule_id": f.get("rule_id", "unknown"),
+                "file": f.get("file", "unknown"),
+                "line": f.get("line", 1),
+            }
+            for f in findings
+        ],
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
+
+
+def load_queue_report(path):
+    p = Path(path)
+    if not p.exists() or not p.is_file():
+        raise FileNotFoundError(f"Queue file not found: {path}")
+    payload = json.loads(p.read_text(encoding="utf-8", errors="ignore"))
+    findings = payload.get("findings", [])
+    reviewed = payload.get("reviewed", [])
+    status_by_key = payload.get("status_by_key", {})
+
+    if not isinstance(findings, list):
+        raise ValueError("Invalid queue file: findings must be a list")
+    if not isinstance(reviewed, list):
+        raise ValueError("Invalid queue file: reviewed must be a list")
+    if not isinstance(status_by_key, dict):
+        status_by_key = {}
+
+    if not status_by_key:
+        status_by_key = {f.get("finding_key"): "pending" for f in findings if f.get("finding_key")}
+        for item in reviewed:
+            fk = item.get("finding_key")
+            if fk:
+                status_by_key[fk] = "reviewed"
+
+    return {
+        "scan_meta": payload.get("scan", {}),
+        "roslyn_meta": payload.get("roslyn", {}),
+        "findings": findings,
+        "reviewed": reviewed,
+        "status_by_key": status_by_key,
+        "queue_path": str(p.resolve()),
+    }
+
+
 def write_json_report(summary_data, output_dir, roslyn_meta, scan_meta):
     output_path = Path(output_dir) / scan_meta["findings_file"]
     payload = {
@@ -671,6 +1388,7 @@ def write_json_report(summary_data, output_dir, roslyn_meta, scan_meta):
             "by_source": summary_data["by_source"],
             "by_language": summary_data["by_language"],
             "by_file_type": summary_data["by_file_type"],
+            "throughput": summary_data.get("throughput", {}),
         },
         "scan": scan_meta,
         "roslyn": roslyn_meta,
@@ -693,6 +1411,8 @@ def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta):
     lines.append(f"- Confirmed issues: {len(confirmed)}")
     lines.append(f"- Severity split: {summary_data['by_severity']}")
     lines.append(f"- Source split: {summary_data['by_source']}")
+    if summary_data.get("throughput"):
+        lines.append(f"- Throughput: {summary_data.get('throughput')}")
     lines.append("")
 
     lines.append("## Roslyn")
@@ -848,6 +1568,10 @@ def write_sarif(summary_data, output_dir, scan_meta):
 def main():
     load_env()
     args = parse_args()
+    run_started = time.perf_counter()
+    regex_stage_seconds = 0.0
+    roslyn_stage_seconds = 0.0
+    llm_stage_seconds = 0.0
 
     model = os.getenv("NFR_OLLAMA_MODEL") or os.getenv("OLLAMA_MODEL") or "qwen3-coder:30b"
     base_url = os.getenv("NFR_OLLAMA_BASE_URL") or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434"
@@ -855,25 +1579,6 @@ def main():
     scan_path = Path(args.path).resolve()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    project_name = _project_name_from_scan_path(scan_path)
-    run_version = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_name = f"findings__{project_name}__{run_version}"
-    scan_meta = {
-        "project": project_name,
-        "run_version": run_version,
-        "scan_path": str(scan_path),
-        "findings_file": f"{base_name}.json",
-        "digest_file": f"nfr_digest__{project_name}__{run_version}.md",
-        "sarif_file": f"nfr__{project_name}__{run_version}.sarif",
-    }
-    log_progress(f"NFR Audit Workbench scan started for path: {scan_path}")
-    log_progress(f"Output directory: {output_dir.resolve()}")
-
-    rules = load_rules(args.rules)
-    log_progress(f"Loaded {len(rules)} regex rule(s) from {args.rules}")
-    regex_findings = pre_scan(scan_path, rules, args.context_lines, args.max_findings)
-    log_progress(f"Regex pre-scan produced {len(regex_findings)} finding(s)")
-
     roslyn_meta = {
         "enabled": bool(args.include_roslyn),
         "executed": False,
@@ -881,43 +1586,330 @@ def main():
         "note": "",
         "sarif_path": "",
     }
-    roslyn_findings = []
 
-    if args.include_roslyn:
-        log_progress("Roslyn scan enabled. Running dotnet analyzer build...")
-        sarif_path, roslyn_error = _run_roslyn_sarif(
-            scan_path,
-            output_dir,
-            args.dotnet_target,
-            args.dotnet_configuration,
-            args.dotnet_timeout_seconds,
+    if args.resume_queue:
+        loaded = load_queue_report(args.resume_queue)
+        scan_meta = loaded["scan_meta"]
+        if not scan_meta:
+            raise ValueError("Invalid queue file: missing scan metadata")
+        queue_file_path = Path(loaded["queue_path"])
+        output_dir = queue_file_path.parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        scan_path = Path(scan_meta.get("scan_path", str(scan_path))).resolve()
+        findings = loaded["findings"]
+        reviewed = loaded["reviewed"]
+        status_by_key = loaded["status_by_key"]
+        if loaded.get("roslyn_meta"):
+            roslyn_meta = loaded["roslyn_meta"]
+        log_progress(f"Resuming run from queue: {queue_file_path.name}")
+        log_progress(f"Output directory: {output_dir.resolve()}")
+        log_progress(
+            f"Loaded queue state: total={len(findings)}, reviewed={len(reviewed)}, "
+            f"pending={sum(1 for f in findings if status_by_key.get(f.get('finding_key')) != 'reviewed')}"
         )
-        if sarif_path:
-            roslyn_findings = _parse_roslyn_findings(sarif_path, scan_path, args.context_lines)
-            roslyn_meta["executed"] = True
-            roslyn_meta["imported_findings"] = len(roslyn_findings)
-            roslyn_meta["sarif_path"] = str(sarif_path)
-            log_progress(f"Roslyn findings imported: {len(roslyn_findings)}")
+    else:
+        project_name = _project_name_from_scan_path(scan_path)
+        run_version = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = f"findings__{project_name}__{run_version}"
+        scan_meta = {
+            "project": project_name,
+            "run_version": run_version,
+            "scan_path": str(scan_path),
+            "findings_file": f"{base_name}.json",
+            "queue_file": f"findings_queue__{project_name}__{run_version}.json",
+            "digest_file": f"nfr_digest__{project_name}__{run_version}.md",
+            "sarif_file": f"nfr__{project_name}__{run_version}.sarif",
+        }
+        log_progress(f"NFR Audit Workbench scan started for path: {scan_path}")
+        log_progress(f"Output directory: {output_dir.resolve()}")
+        ignore_globs = load_ignore_globs(scan_path, args.ignore_file)
+        if ignore_globs:
+            log_progress(f"Loaded {len(ignore_globs)} ignore glob(s) from {args.ignore_file}")
+
+        rules = load_rules(args.rules)
+        log_progress(f"Loaded {len(rules)} regex rule(s) from {args.rules}")
+        regex_started = time.perf_counter()
+        regex_findings = pre_scan(
+            scan_path,
+            rules,
+            args.context_lines,
+            args.max_findings,
+            ignore_globs,
+            regex_workers=args.regex_workers,
+        )
+        regex_stage_seconds = time.perf_counter() - regex_started
+        log_progress(f"Regex pre-scan produced {len(regex_findings)} finding(s)")
+        log_progress(f"Regex stage timing: {regex_stage_seconds:.2f}s")
+
+        roslyn_findings = []
+        if args.include_roslyn:
+            log_progress("Roslyn scan enabled. Running dotnet analyzer build...")
+            roslyn_started = time.perf_counter()
+            sarif_path, roslyn_error = _run_roslyn_sarif(
+                scan_path,
+                output_dir,
+                args.dotnet_target,
+                args.dotnet_configuration,
+                args.dotnet_timeout_seconds,
+            )
+            if sarif_path:
+                roslyn_findings = _parse_roslyn_findings(sarif_path, scan_path, args.context_lines, ignore_globs)
+                roslyn_meta["executed"] = True
+                roslyn_meta["imported_findings"] = len(roslyn_findings)
+                roslyn_meta["sarif_path"] = str(sarif_path)
+                log_progress(f"Roslyn findings imported: {len(roslyn_findings)}")
+            else:
+                roslyn_meta["note"] = roslyn_error
+                log_progress(f"Roslyn scan note: {roslyn_error}")
+            roslyn_stage_seconds = time.perf_counter() - roslyn_started
+            log_progress(f"Roslyn stage timing: {roslyn_stage_seconds:.2f}s")
+
+        findings_all = regex_findings + roslyn_findings
+        log_progress(f"Combined findings before baseline filter: {len(findings_all)}")
+
+        use_incremental = bool(args.incremental or args.only_new)
+        baseline_path = None
+        if use_incremental:
+            if args.baseline:
+                baseline_path = Path(args.baseline)
+            else:
+                baseline_path = baseline_path_for_project(output_dir, args.baseline_dir, project_name)
+            baseline_keys = load_baseline_keys(str(baseline_path))
+            findings = [f for f in findings_all if f["finding_key"] not in baseline_keys]
+            log_progress(
+                f"Incremental mode: baseline keys={len(baseline_keys)} | "
+                f"new/changed findings={len(findings)}"
+            )
         else:
-            roslyn_meta["note"] = roslyn_error
-            log_progress(f"Roslyn scan note: {roslyn_error}")
+            findings = findings_all
+            log_progress("Full scan mode enabled (incremental disabled).")
 
-    findings = regex_findings + roslyn_findings
-    log_progress(f"Combined findings before baseline filter: {len(findings)}")
+        if baseline_path is None:
+            baseline_path = baseline_path_for_project(output_dir, args.baseline_dir, project_name)
+        written_baseline = write_baseline_file(baseline_path, findings_all, scan_meta)
+        log_progress(f"Baseline updated: {written_baseline}")
 
-    if args.only_new:
-        baseline_keys = load_baseline_keys(args.baseline)
-        findings = [f for f in findings if f["finding_key"] not in baseline_keys]
-        log_progress(f"Findings after baseline filter: {len(findings)}")
+        reviewed = []
+        status_by_key = {f["finding_key"]: "pending" for f in findings}
+        queue_path = write_queue_report(findings, status_by_key, reviewed, output_dir, scan_meta, roslyn_meta)
+        log_progress(f"Queue file written: {queue_path.name}")
 
-    findings_for_llm = findings[: args.max_llm]
-    log_progress(f"Sending {len(findings_for_llm)} finding(s) to Ollama (max_llm={args.max_llm})")
-    reviewed = review_with_ollama(findings_for_llm, model, base_url, args.temperature)
+    reviewed_by_key = {
+        item.get("finding_key"): item
+        for item in reviewed
+        if isinstance(item, dict) and item.get("finding_key")
+    }
+    for fk in reviewed_by_key:
+        status_by_key[fk] = "reviewed"
+    reviewed = list(reviewed_by_key.values())
+
+    cache_path = _resolve_cache_path(args.llm_cache_file, output_dir)
+    llm_cache = load_llm_cache(cache_path) if args.use_llm_cache else {}
+    if args.use_llm_cache:
+        log_progress(f"Loaded LLM cache entries: {len(llm_cache)} from {cache_path}")
+
+    pending_findings = [f for f in findings if status_by_key.get(f.get("finding_key")) != "reviewed"]
+    if args.prioritize_llm_queue:
+        pending_findings = sorted(pending_findings, key=_priority_sort_key)
+
+    if args.dedup_before_llm:
+        clusters = build_llm_clusters(pending_findings)
+    else:
+        clusters = [
+            {"cluster_id": f"cluster_{idx + 1}", "representative": f, "members": [f], "order": idx}
+            for idx, f in enumerate(pending_findings)
+        ]
+
+    rep_queue = []
+    cluster_by_rep_key = {}
+    for c in clusters:
+        rep = dict(c["representative"])
+        rep["_cluster_id"] = c["cluster_id"]
+        rep["_llm_cache_key"] = _llm_cache_key(rep)
+        rep_queue.append(rep)
+        cluster_by_rep_key[rep["finding_key"]] = c
+
+    if args.dedup_before_llm:
+        member_total = sum(len(c.get("members", [])) for c in clusters)
+        log_progress(
+            f"Dedup before LLM: {member_total} pending finding(s) collapsed to "
+            f"{len(rep_queue)} representative finding(s)."
+        )
+
+    cache_hits = 0
+    reps_to_review = []
+    for rep in rep_queue:
+        ck = rep.get("_llm_cache_key")
+        if args.use_llm_cache and ck in llm_cache:
+            cached = llm_cache.get(ck, {})
+            cached_review = dict(rep)
+            cached_review["llm_review"] = dict(cached.get("llm_review", {}))
+            cached_review["llm_transport"] = {
+                "attempts": 0,
+                "attempts_allowed": 0,
+                "fallback_used": False,
+                "error_kind": "",
+                "from_cache": True,
+                "recovered_after_retry": False,
+            }
+            cached_review["llm_error_kind"] = ""
+            cached_review["llm_attempts"] = 0
+            cached_review["llm_retried"] = False
+            expanded = expand_cluster_review(cached_review, cluster_by_rep_key[rep["finding_key"]])
+            for item in expanded:
+                reviewed_by_key[item["finding_key"]] = item
+                status_by_key[item["finding_key"]] = "reviewed"
+            cache_hits += 1
+        else:
+            reps_to_review.append(rep)
+
+    if cache_hits:
+        covered = sum(
+            len(cluster_by_rep_key[rep["finding_key"]]["members"])
+            for rep in rep_queue
+            if rep.get("_llm_cache_key") in llm_cache
+        )
+        log_progress(f"LLM cache hits: {cache_hits} representative item(s), covering {covered} finding(s).")
+
+    reviewed = list(reviewed_by_key.values())
+    write_queue_report(findings, status_by_key, reviewed, output_dir, scan_meta, roslyn_meta)
+    if args.use_llm_cache:
+        save_llm_cache(cache_path, llm_cache)
+
+    batch_size = int(args.max_llm)
+    total_for_llm = len(reps_to_review)
+
+    if batch_size <= 0:
+        log_progress("Skipping Ollama review because --max-llm is 0.")
+    elif total_for_llm == 0:
+        log_progress("No pending representative findings available for Ollama review.")
+    else:
+        start = 0
+        batch_no = 1
+        max_workers = max(1, int(args.llm_workers))
+        current_workers = max_workers
+        stable_batches = 0
+        while start < total_for_llm:
+            end = min(start + batch_size, total_for_llm)
+            current_batch = reps_to_review[start:end]
+            covered_count = sum(len(cluster_by_rep_key[rep["finding_key"]]["members"]) for rep in current_batch)
+            log_progress(
+                f"Sending batch {batch_no}: {len(current_batch)} representative finding(s) "
+                f"covering {covered_count} finding(s) to Ollama ({start + 1}-{end} of {total_for_llm})"
+            )
+            llm_batch_started = time.perf_counter()
+            batch_reviewed = review_with_ollama(
+                current_batch,
+                model,
+                base_url,
+                args.temperature,
+                workers=current_workers,
+                retries=args.llm_retries,
+                retry_backoff_seconds=args.llm_retry_backoff_seconds,
+                connect_timeout_seconds=args.llm_connect_timeout_seconds,
+                read_timeout_seconds=args.llm_read_timeout_seconds,
+            )
+            llm_batch_seconds = time.perf_counter() - llm_batch_started
+            llm_stage_seconds += llm_batch_seconds
+            batch_lat = _latency_stats_from_reviewed(batch_reviewed)
+            log_progress(
+                f"LLM batch timing: {llm_batch_seconds:.2f}s | latency_ms avg/p50/p95="
+                f"{batch_lat['avg_ms']}/{batch_lat['p50_ms']}/{batch_lat['p95_ms']} "
+                f"(count={batch_lat['count']})"
+            )
+
+            for rep_result in batch_reviewed:
+                cluster = cluster_by_rep_key.get(rep_result["finding_key"])
+                if not cluster:
+                    cluster = {
+                        "cluster_id": rep_result.get("_cluster_id", "cluster_unknown"),
+                        "representative": rep_result,
+                        "members": [rep_result],
+                    }
+                expanded = expand_cluster_review(rep_result, cluster)
+                for item in expanded:
+                    reviewed_by_key[item["finding_key"]] = item
+                    status_by_key[item["finding_key"]] = "reviewed"
+
+                if args.use_llm_cache and not rep_result.get("llm_transport", {}).get("fallback_used"):
+                    ck = rep_result.get("_llm_cache_key") or _llm_cache_key(rep_result)
+                    llm_cache[ck] = {
+                        "llm_review": rep_result.get("llm_review", {}),
+                        "updated_at": datetime.now().isoformat(timespec="seconds"),
+                    }
+
+            reviewed = list(reviewed_by_key.values())
+            write_queue_report(findings, status_by_key, reviewed, output_dir, scan_meta, roslyn_meta)
+            if args.use_llm_cache:
+                save_llm_cache(cache_path, llm_cache)
+
+            summary_data = summarize(reviewed)
+            json_path = write_json_report(summary_data, output_dir, roslyn_meta, scan_meta)
+            md_path = write_markdown(summary_data, output_dir, roslyn_meta, scan_meta)
+            sarif_path = write_sarif(summary_data, output_dir, scan_meta)
+            log_progress(
+                f"Merged outputs updated after batch {batch_no}: "
+                f"{json_path.name}, {md_path.name}, {sarif_path.name}"
+            )
+
+            if args.adaptive_llm_workers:
+                current_workers, stable_batches = adapt_llm_workers(
+                    current_workers, max_workers, batch_reviewed, stable_batches
+                )
+
+            if end >= total_for_llm:
+                break
+
+            if args.auto_continue_batches:
+                log_progress("Auto-continue enabled. Proceeding to next batch.")
+                start = end
+                batch_no += 1
+                continue
+
+            if not sys.stdin or not sys.stdin.isatty():
+                log_progress("Non-interactive shell detected. Stopping before next batch.")
+                break
+
+            try:
+                answer = input(
+                    f"Processed {end}/{total_for_llm} representative items. Continue with next batch of up to {batch_size}? [y/N]: "
+                ).strip().lower()
+            except EOFError:
+                log_progress("No interactive input available. Stopping before next batch.")
+                break
+            if answer not in {"y", "yes"}:
+                log_progress("Stopped by user after current batch.")
+                break
+
+            start = end
+            batch_no += 1
+
+    reviewed = list(reviewed_by_key.values())
 
     summary_data = summarize(reviewed)
+    total_seconds = time.perf_counter() - run_started
+    llm_lat = _latency_stats_from_reviewed(reviewed)
+    summary_data["throughput"] = {
+        "stage_seconds": {
+            "regex": round(regex_stage_seconds, 2),
+            "roslyn": round(roslyn_stage_seconds, 2),
+            "llm": round(llm_stage_seconds, 2),
+            "total": round(total_seconds, 2),
+        },
+        "llm_latency_ms": llm_lat,
+    }
+    log_progress(
+        f"Stage timings (s): regex={regex_stage_seconds:.2f}, roslyn={roslyn_stage_seconds:.2f}, "
+        f"llm={llm_stage_seconds:.2f}, total={total_seconds:.2f}"
+    )
+    log_progress(
+        f"LLM latency_ms summary: avg={llm_lat['avg_ms']}, p50={llm_lat['p50_ms']}, "
+        f"p95={llm_lat['p95_ms']}, count={llm_lat['count']}"
+    )
     json_path = write_json_report(summary_data, output_dir, roslyn_meta, scan_meta)
     md_path = write_markdown(summary_data, output_dir, roslyn_meta, scan_meta)
     sarif_path = write_sarif(summary_data, output_dir, scan_meta)
+    write_queue_report(findings, status_by_key, reviewed, output_dir, scan_meta, roslyn_meta)
 
     print(f"NFR Audit Workbench scan complete. Reviewed: {len(reviewed)} | Confirmed: {len(summary_data['confirmed'])}")
     print(f"Source split (confirmed): {summary_data['by_source']}")
