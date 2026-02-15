@@ -102,6 +102,12 @@ Run all packs together:
 python nfr_scan.py --path C:developmentmy-repo --rules rules/all_rules.json
 ```
 
+Compare rule deltas between two runs:
+
+```powershell
+python scripts/compare_rule_deltas.py --before reports/rule_compare/before/findings_queue__project__timestamp.json --after reports/rule_compare/after/findings_queue__project__timestamp.json
+```
+
 Config-driven defaults:
 
 -   The scanner loads `nfr_scan_config.json` by default.
@@ -145,6 +151,11 @@ LLM batching behavior:
 -   CI trust-tier scoping: `--ci-count-trust-tiers` (comma-separated from `llm_confirmed,fast_routed,fallback,regex_only,roslyn`).
 -   Rules can optionally set `ignore_comment_lines: true` to suppress comment-only regex matches.
 -   `NFR-DOTNET-003` is tuned to target task-like blocking `.Result` patterns and avoid common `OperationResult<T>.Result` false positives.
+-   Frontend XSS rule is split into:
+  `NFR-FE-005A` (high-risk dynamic source to raw HTML, S1) and
+  `NFR-FE-005B` (generic raw HTML usage, S3 review warning).
+-   FE/Razor packs exclude common vendor/minified paths by default to reduce non-actionable noise.
+-   LLM patch guard marks no-op diffs as `patch_quality=no_op` and downgrades patch output to `unknown`.
 -   Incremental mode is on by default (`--incremental`): only new/changed findings are sent to LLM versus persisted baseline.
 -   Use `--no-incremental` for full scan mode.
 -   Baseline persistence defaults to `<output-dir>/<baseline-dir>/<project>.json` where `--baseline-dir` defaults to `baselines`.
@@ -157,6 +168,8 @@ LLM batching behavior:
 -   Resume a stopped run with `--resume-queue <path-to-findings_queue__...json>`; pending findings continue in the same output files.
 -   When `--resume-queue` is used, the queue state is the source of truth for pending/reviewed items and original output file names.
 -   Prompt slimming is automatic: S3/S4 findings send reduced snippet context to LLM; S1/S2 keep full context.
+-   Rule pipeline logging now prints per-rule `raw -> unique -> pending -> representatives -> sent_to_llm`.
+-   Files in vendor/minified paths are tagged as `action_bucket=dependency_risk` (upgrade/CSP path) instead of app-fix backlog.
 
 Default parameter values (from `nfr_scan_config.json`):
 
@@ -208,6 +221,11 @@ Default parameter values (from `nfr_scan_config.json`):
 -   `ci_threshold_s4`: `-1`
 -   `ci_count_trust_tiers`: `llm_confirmed,fast_routed,fallback,regex_only,roslyn`
 
+CI note:
+
+-   In `hard-fail` mode, default blocking scope is `llm_confirmed,fast_routed` unless `--ci-count-trust-tiers` is explicitly provided.
+-   `fallback` findings are reported as warn-only in default `hard-fail` behavior.
+
 With Roslyn ingestion:
 
 ```powershell
@@ -248,9 +266,11 @@ Finding objects include:
 -   grouping metadata: `top_level_category` (`dotnet`/`front_end`/`rest_api`), `sub_category` (`concurrency`/`performance`/`loading`)
 -   triage metadata: `severity`, `confidence`, `effort`, `benefit`, `quick_win`
 -   trust metadata: `trust_tier` (`llm_confirmed`/`fast_routed`/`fallback`/`regex_only`/`roslyn`)
+-   action metadata: `action_bucket` (`app_code`/`dependency_risk`), `action_hint`
 -   reliability metadata: `llm_error_kind`, `llm_attempts`, `llm_retried`
 -   fallback governance metadata: `llm_transport.fallback_used`, dedicated fallback report JSON
 -   rule quality metadata (`summary.rule_quality`): reviewed, confirmed, precision, fallback rate, timeout-like rate, top false-positive reasons per rule
+-   noise metadata: `summary.rule_noise_recommendations` (recommended `monitor`/`demote`/`tune`/`disable` actions)
 -   recommendation metadata: `why`, `recommendation`, `testing_notes`, `patch`
 -   throughput summary metadata (`summary.throughput`): stage timings (`regex`, `roslyn`, `llm`, `total`) and LLM latency stats (`avg_ms`, `p50_ms`, `p95_ms`)
 

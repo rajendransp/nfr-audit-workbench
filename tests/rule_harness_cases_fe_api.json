@@ -14,11 +14,46 @@
     "expected_match_lines": []
   },
   {
+    "name": "fe_005a_detects_risky_innerhtml_source",
+    "rule_id": "NFR-FE-005A",
+    "file": "xss.js",
+    "content": "function p(editor){ preview.innerHTML = marked(editor.value); }\n",
+    "expected_match_lines": [1]
+  },
+  {
+    "name": "fe_005a_skips_constant_innerhtml",
+    "rule_id": "NFR-FE-005A",
+    "file": "safe.js",
+    "content": "function p(){ preview.innerHTML = '<b>ok</b>'; }\n",
+    "expected_match_lines": []
+  },
+  {
+    "name": "fe_005b_detects_generic_innerhtml",
+    "rule_id": "NFR-FE-005B",
+    "file": "generic.js",
+    "content": "function p(v){ node.innerHTML = v; }\n",
+    "expected_match_lines": [1]
+  },
+  {
     "name": "fe_015_detects_addEventListener_without_cleanup",
     "rule_id": "NFR-FE-015",
     "file": "listener.tsx",
     "content": "import { useEffect } from 'react';\nexport function L(){ useEffect(() => { window.addEventListener('resize', onResize); }, []); return null; }\n",
     "expected_match_lines": [2]
+  },
+  {
+    "name": "razor_004_detects_risky_markupstring_source",
+    "rule_id": "NFR-RAZOR-004",
+    "file": "Comp.razor",
+    "content": "@code { MarkupString Body => new MarkupString(response.Content); }\n",
+    "expected_match_lines": [1]
+  },
+  {
+    "name": "razor_004b_detects_generic_markupstring_usage",
+    "rule_id": "NFR-RAZOR-004B",
+    "file": "Comp2.razor",
+    "content": "@code { MarkupString Body => new MarkupString(html); }\n",
+    "expected_match_lines": [1]
   },
   {
     "name": "api_016_detects_missing_ct_propagation",

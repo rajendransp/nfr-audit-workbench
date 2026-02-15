@@ -25,6 +25,15 @@ SEVERITY_ORDER = {"S1": 0, "S2": 1, "S3": 2, "S4": 3}
 SEVERITY_LEVEL = {"S1": "error", "S2": "warning", "S3": "note", "S4": "note"}
 ROSLYN_LEVEL_TO_S = {"error": "S1", "warning": "S2", "note": "S3", "none": "S4"}
 DEFAULT_CONFIG_PATH = "nfr_scan_config.json"
+DEPENDENCY_RISK_HINTS = (
+    ".min.js",
+    "/vendor/",
+    "/vendors/",
+    "/lib/",
+    "/wwwroot/lib/",
+    "/scripts/ej2/",
+    "/jquery",
+)
 
 SYSTEM_PROMPT = (
     "You are a senior .NET reliability/performance reviewer. "
@@ -316,7 +325,9 @@ def parse_args():
     args = parser.parse_args()
     config = load_scan_config(args.config)
     passed_flags = get_passed_cli_flags(sys.argv)
-    return apply_config_defaults(args, config, passed_flags)
+    args = apply_config_defaults(args, config, passed_flags)
+    setattr(args, "_passed_flags", passed_flags)
+    return args
 
 
 def get_passed_cli_flags(argv):
@@ -438,6 +449,16 @@ def _normalize_ignore_pattern(raw):
         out.add(f"{trimmed}/**")
 
     return sorted(x for x in out if x and x != ".")
+
+
+def _is_dependency_risk_path(path):
+    text = str(path or "").replace("\\", "/").lower()
+    if text.endswith(".min.js"):
+        return True
+    for hint in DEPENDENCY_RISK_HINTS:
+        if hint in text:
+            return True
+    return False
 
 
 def load_ignore_globs(scan_path, ignore_file):
@@ -801,6 +822,76 @@ def derive_noisy_rules(rule_quality_payload, min_reviewed, max_precision, max_fa
     return noisy
 
 
+def build_rule_pipeline_stats(pre_scan_rule_stats, pending_findings, rep_queue, reps_to_review):
+    stats = {}
+    for rid, item in (pre_scan_rule_stats or {}).items():
+        stats[rid] = {
+            "raw_matches": int(item.get("raw_matches", 0) or 0),
+            "unique_findings": int(item.get("unique_findings", 0) or 0),
+            "pending_after_filters": 0,
+            "representatives": 0,
+            "sent_to_llm": 0,
+        }
+    for f in pending_findings or []:
+        rid = str(f.get("rule_id", "unknown"))
+        stats.setdefault(rid, {"raw_matches": 0, "unique_findings": 0, "pending_after_filters": 0, "representatives": 0, "sent_to_llm": 0})
+        stats[rid]["pending_after_filters"] += 1
+    for rep in rep_queue or []:
+        rid = str(rep.get("rule_id", "unknown"))
+        stats.setdefault(rid, {"raw_matches": 0, "unique_findings": 0, "pending_after_filters": 0, "representatives": 0, "sent_to_llm": 0})
+        stats[rid]["representatives"] += 1
+    for rep in reps_to_review or []:
+        rid = str(rep.get("rule_id", "unknown"))
+        stats.setdefault(rid, {"raw_matches": 0, "unique_findings": 0, "pending_after_filters": 0, "representatives": 0, "sent_to_llm": 0})
+        stats[rid]["sent_to_llm"] += 1
+    return stats
+
+
+def log_rule_pipeline_stats(stats):
+    if not stats:
+        return
+    active = [(rid, v) for rid, v in stats.items() if any(int(v.get(k, 0) or 0) > 0 for k in ("raw_matches", "unique_findings", "pending_after_filters", "representatives", "sent_to_llm"))]
+    active.sort(key=lambda item: (-int(item[1].get("raw_matches", 0)), item[0]))
+    log_progress(f"Rule pipeline stats (raw -> unique -> pending -> reps -> sent_to_llm), active_rules={len(active)}")
+    for rid, v in active[:30]:
+        log_progress(
+            f"  {rid}: {int(v.get('raw_matches', 0))} -> {int(v.get('unique_findings', 0))} -> "
+            f"{int(v.get('pending_after_filters', 0))} -> {int(v.get('representatives', 0))} -> "
+            f"{int(v.get('sent_to_llm', 0))}"
+        )
+
+
+def build_noise_recommendations(rule_quality, min_reviewed=5, max_items=10):
+    out = []
+    for rid, stats in (rule_quality or {}).items():
+        if not isinstance(stats, dict):
+            continue
+        reviewed = int(stats.get("reviewed", 0) or 0)
+        if reviewed < int(min_reviewed):
+            continue
+        precision = float(stats.get("precision", 0.0) or 0.0)
+        fallback_rate = float(stats.get("fallback_rate", 0.0) or 0.0)
+        if reviewed >= 30 and precision <= 0.15:
+            action = "disable"
+        elif precision <= 0.35 or fallback_rate >= 0.4:
+            action = "tune"
+        elif fallback_rate >= 0.25:
+            action = "demote"
+        else:
+            action = "monitor"
+        out.append(
+            {
+                "rule_id": rid,
+                "reviewed": reviewed,
+                "precision": round(precision, 4),
+                "fallback_rate": round(fallback_rate, 4),
+                "recommended_action": action,
+            }
+        )
+    out.sort(key=lambda x: (x["recommended_action"] == "monitor", x["precision"], -x["fallback_rate"], -x["reviewed"], x["rule_id"]))
+    return out[:max_items]
+
+
 def build_fast_routed_review(finding):
     confidence = finding.get("confidence_hint")
     try:
@@ -1092,6 +1183,7 @@ def pre_scan(
     total_rules = len(rules)
     regex_workers = max(1, int(regex_workers or 1))
     matches_by_rule = {}
+    pre_scan_rule_stats = {}
 
     if regex_workers == 1 or total_rules <= 1:
         for idx, rule in enumerate(rules, start=1):
@@ -1120,11 +1212,16 @@ def pre_scan(
             log_progress(f"Rule {rule['id']} produced {len(matches)} match(es)")
 
     for idx, rule in enumerate(rules, start=1):
+        pre_scan_rule_stats[rule["id"]] = {"raw_matches": len(matches_by_rule.get(rule["id"], [])), "unique_findings": 0}
+
+    reached_limit = False
+    for idx, rule in enumerate(rules, start=1):
         matches = matches_by_rule.get(rule["id"], [])
         for m in matches:
             if not _match_in_diff_scope(m, scan_path, changed_lines_by_file):
                 continue
             snippet = _snippet(m["file"], m["line"], context_lines, cache)
+            dependency_risk = _is_dependency_risk_path(m["file"])
             key = f"regex|{rule['id']}|{m['file']}|{m['line']}|{hashlib.sha1(m['match_text'].encode('utf-8', errors='ignore')).hexdigest()[:12]}"
             all_findings.append(
                 {
@@ -1145,11 +1242,15 @@ def pre_scan(
                     "match_text": m["match_text"],
                     "snippet": snippet,
                     "confidence_hint": _coerce_float(rule.get("confidence_hint", 0.65), 0.65),
+                    "action_bucket": "dependency_risk" if dependency_risk else "app_code",
+                    "action_hint": "upgrade_dependency_or_csp" if dependency_risk else "app_fix_backlog",
                 }
             )
             if len(all_findings) >= max_findings:
-                log_progress(f"Reached max-findings limit ({max_findings}) during pre-scan")
-                return all_findings
+                reached_limit = True
+                break
+        if reached_limit:
+            break
 
     unique = []
     seen = set()
@@ -1158,7 +1259,14 @@ def pre_scan(
             continue
         seen.add(item["finding_key"])
         unique.append(item)
-    return unique
+        rid = str(item.get("rule_id", "unknown"))
+        if rid not in pre_scan_rule_stats:
+            pre_scan_rule_stats[rid] = {"raw_matches": 0, "unique_findings": 0}
+        pre_scan_rule_stats[rid]["unique_findings"] += 1
+
+    if reached_limit:
+        log_progress(f"Reached max-findings limit ({max_findings}) during pre-scan")
+    return unique, pre_scan_rule_stats
 
 
 def _find_dotnet_target(scan_path):
@@ -1263,6 +1371,7 @@ def _parse_roslyn_findings(sarif_path, scan_root, context_lines, ignore_globs, c
                 if touched_lines and line not in touched_lines:
                     continue
             snippet = _snippet(norm_path, line, context_lines, cache)
+            dependency_risk = _is_dependency_risk_path(norm_path)
 
             rule_meta = rule_lookup.get(rid, {})
             title = (
@@ -1290,6 +1399,8 @@ def _parse_roslyn_findings(sarif_path, scan_root, context_lines, ignore_globs, c
                     "match_text": message_text,
                     "snippet": snippet,
                     "confidence_hint": 0.95,
+                    "action_bucket": "dependency_risk" if dependency_risk else "app_code",
+                    "action_hint": "upgrade_dependency_or_csp" if dependency_risk else "app_fix_backlog",
                 }
             )
 
@@ -1320,6 +1431,26 @@ def _extract_json(text):
         candidate = text[first : last + 1]
         return json.loads(candidate)
     raise ValueError("Could not parse JSON from LLM response")
+
+
+def _patch_quality(patch_text):
+    text = str(patch_text or "").strip()
+    if not text or text.lower() == "unknown":
+        return "unknown"
+    plus = []
+    minus = []
+    for line in text.splitlines():
+        if line.startswith(("+++", "---", "@@")):
+            continue
+        if line.startswith("+"):
+            plus.append(line[1:].strip())
+        elif line.startswith("-"):
+            minus.append(line[1:].strip())
+    if not plus and not minus:
+        return "no_op"
+    if plus == minus:
+        return "no_op"
+    return "valid"
 
 
 def _classify_ollama_error(exc):
@@ -1487,6 +1618,12 @@ def _review_single_finding(
         parsed["quick_win"] = _infer_quick_win(sev, parsed["effort"], parsed["benefit"])
     else:
         parsed["quick_win"] = bool(parsed.get("quick_win"))
+    parsed["patch_quality"] = _patch_quality(parsed.get("patch", "unknown"))
+    if parsed["patch_quality"] == "no_op":
+        parsed["patch"] = "unknown"
+        notes = list(parsed.get("testing_notes", []) or [])
+        notes.append("Suggested patch was a no-op; manual fix proposal required.")
+        parsed["testing_notes"] = notes
 
     finding_out = dict(finding)
     finding_out["llm_review"] = parsed
@@ -1855,6 +1992,7 @@ def summarize(reviewed):
     by_severity = Counter(severity_of(x) for x in confirmed)
     by_source = Counter(x.get("source", "unknown") for x in confirmed)
     by_trust_tier = Counter(x.get("trust_tier", "unknown") for x in confirmed)
+    by_action_bucket = Counter(x.get("action_bucket", "app_code") for x in confirmed)
     by_language = Counter(x.get("language", "unknown") for x in confirmed)
     by_file_type = Counter(x.get("file_type", "unknown") for x in confirmed)
     rule_quality = build_rule_quality_scoreboard(reviewed)
@@ -1868,9 +2006,12 @@ def summarize(reviewed):
         "by_severity": dict(by_severity),
         "by_source": dict(by_source),
         "by_trust_tier": dict(by_trust_tier),
+        "by_action_bucket": dict(by_action_bucket),
         "by_language": dict(by_language),
         "by_file_type": dict(by_file_type),
         "rule_quality": rule_quality,
+        "app_fix_backlog_count": sum(1 for x in confirmed if x.get("action_bucket", "app_code") != "dependency_risk"),
+        "dependency_risk_count": sum(1 for x in confirmed if x.get("action_bucket", "app_code") == "dependency_risk"),
     }
 
 
@@ -1948,11 +2089,16 @@ def write_json_report(summary_data, output_dir, roslyn_meta, scan_meta):
             "by_module": summary_data["by_module"],
             "by_source": summary_data["by_source"],
             "by_trust_tier": summary_data.get("by_trust_tier", {}),
+            "by_action_bucket": summary_data.get("by_action_bucket", {}),
             "by_language": summary_data["by_language"],
             "by_file_type": summary_data["by_file_type"],
             "throughput": summary_data.get("throughput", {}),
             "rule_quality": summary_data.get("rule_quality", {}),
             "rule_precision_trend": summary_data.get("rule_precision_trend", {}),
+            "rule_pipeline_stats": summary_data.get("rule_pipeline_stats", {}),
+            "rule_noise_recommendations": summary_data.get("rule_noise_recommendations", []),
+            "app_fix_backlog_count": summary_data.get("app_fix_backlog_count", 0),
+            "dependency_risk_count": summary_data.get("dependency_risk_count", 0),
         },
         "scan": scan_meta,
         "roslyn": roslyn_meta,
@@ -1992,6 +2138,9 @@ def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta):
     lines.append(f"- Severity split: {summary_data['by_severity']}")
     lines.append(f"- Source split: {summary_data['by_source']}")
     lines.append(f"- Trust-tier split: {summary_data.get('by_trust_tier', {})}")
+    lines.append(f"- Action bucket split: {summary_data.get('by_action_bucket', {})}")
+    lines.append(f"- App-fix backlog count: {summary_data.get('app_fix_backlog_count', 0)}")
+    lines.append(f"- Dependency-risk count: {summary_data.get('dependency_risk_count', 0)}")
     if summary_data.get("throughput"):
         lines.append(f"- Throughput: {summary_data.get('throughput')}")
     lines.append("")
@@ -2074,6 +2223,20 @@ def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta):
     lines.append("")
 
     lines.append("## Fallback Governance")
+    lines.append("")
+
+    lines.append("## Noise Recommendations")
+    lines.append("")
+    recs = summary_data.get("rule_noise_recommendations", [])
+    if recs:
+        for item in recs:
+            lines.append(
+                f"- {item.get('rule_id', 'unknown')}: action={item.get('recommended_action', 'monitor')}, "
+                f"precision={item.get('precision', 0.0)}, fallback_rate={item.get('fallback_rate', 0.0)}, "
+                f"reviewed={item.get('reviewed', 0)}"
+            )
+    else:
+        lines.append("- None")
     lines.append("")
     fallback_items = summary_data.get("fallback_findings", [])
     if not fallback_items:
@@ -2202,12 +2365,17 @@ def evaluate_ci_policy(summary_data, args):
     if mode not in {"warn", "soft-fail", "hard-fail"}:
         mode = "warn"
 
+    passed_flags = set(getattr(args, "_passed_flags", set()) or set())
     allowed_tiers = _parse_csv_set(getattr(args, "ci_count_trust_tiers", ""))
-    if not allowed_tiers:
+    if mode == "hard-fail" and "ci_count_trust_tiers" not in passed_flags:
+        # Safer default for hard-fail: only higher-trust tiers block builds.
+        allowed_tiers = {"llm_confirmed", "fast_routed"}
+    elif not allowed_tiers:
         allowed_tiers = {"llm_confirmed", "fast_routed", "fallback", "regex_only", "roslyn"}
 
     confirmed = summary_data.get("confirmed", [])
     scoped = [x for x in confirmed if str(x.get("trust_tier", "unknown")).lower() in allowed_tiers]
+    fallback_items = [x for x in confirmed if str(x.get("trust_tier", "unknown")).lower() == "fallback"]
     by_sev = Counter(str((x.get("llm_review", {}) or {}).get("severity", x.get("default_severity", "S3"))).upper() for x in scoped)
 
     thresholds = {
@@ -2230,6 +2398,10 @@ def evaluate_ci_policy(summary_data, args):
     messages = []
     scope_desc = ",".join(sorted(allowed_tiers))
     messages.append(f"CI policy scope trust_tiers=[{scope_desc}] count={len(scoped)}")
+    if mode == "hard-fail" and fallback_items:
+        messages.append(
+            f"Fallback findings present ({len(fallback_items)}); treated as warn-only in hard-fail mode."
+        )
     if breaches:
         messages.append("CI policy breaches: " + "; ".join(breaches))
     else:
@@ -2252,6 +2424,7 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     changed_lines_by_file = {}
+    pre_scan_rule_stats = {}
     roslyn_meta = {
         "enabled": bool(args.include_roslyn),
         "executed": False,
@@ -2323,7 +2496,7 @@ def main():
             else:
                 log_progress("Diff mode returned no changes or could not be applied; scanning full scope.")
         regex_started = time.perf_counter()
-        regex_findings = pre_scan(
+        regex_findings, pre_scan_rule_stats = pre_scan(
             scan_path,
             rules,
             args.context_lines,
@@ -2453,6 +2626,8 @@ def main():
             f"{len(rep_queue)} representative finding(s)."
         )
 
+    pipeline_stats = build_rule_pipeline_stats(pre_scan_rule_stats, pending_findings, rep_queue, [])
+
     cache_hits = 0
     fast_routed_hits = 0
     reps_to_review = []
@@ -2493,6 +2668,9 @@ def main():
             fast_routed_hits += 1
         else:
             reps_to_review.append(rep)
+
+    pipeline_stats = build_rule_pipeline_stats(pre_scan_rule_stats, pending_findings, rep_queue, reps_to_review)
+    log_rule_pipeline_stats(pipeline_stats)
 
     if cache_hits:
         covered = sum(
@@ -2632,11 +2810,20 @@ def main():
         },
         "llm_latency_ms": llm_lat,
     }
+    summary_data["rule_pipeline_stats"] = pipeline_stats
     current_quality = summary_data.get("rule_quality", {})
     summary_data["rule_precision_trend"] = build_rule_precision_trend(quality_history, current_quality)
     merged_quality = merge_rule_quality(quality_history, current_quality)
     save_rule_quality(quality_path, merged_quality)
     summary_data["rule_quality"] = merged_quality.get("rules", {})
+    summary_data["rule_noise_recommendations"] = build_noise_recommendations(summary_data.get("rule_quality", {}))
+    if summary_data["rule_noise_recommendations"]:
+        log_progress("Top noisy rules and recommended actions:")
+        for item in summary_data["rule_noise_recommendations"]:
+            log_progress(
+                f"  {item['rule_id']}: action={item['recommended_action']} "
+                f"(precision={item['precision']}, fallback_rate={item['fallback_rate']}, reviewed={item['reviewed']})"
+            )
     log_progress(
         f"Stage timings (s): regex={regex_stage_seconds:.2f}, roslyn={roslyn_stage_seconds:.2f}, "
         f"llm={llm_stage_seconds:.2f}, total={total_seconds:.2f}"

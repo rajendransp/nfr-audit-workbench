@@ -10,7 +10,7 @@ class RuleHarnessTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         rules = []
-        for path in ("rules/dotnet_rules.json", "rules/frontend_rules.json", "rules/rest_api_rules.json"):
+        for path in ("rules/dotnet_rules.json", "rules/frontend_rules.json", "rules/rest_api_rules.json", "rules/razor_rules.json"):
             rules.extend(json.loads(Path(path).read_text(encoding="utf-8-sig")))
         cls.rule_map = {r["id"]: r for r in rules}
         cls.cases = []
