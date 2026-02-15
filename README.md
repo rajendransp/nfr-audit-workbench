@@ -114,7 +114,7 @@ Config-driven defaults:
 -   You can use another config file with `--config <path>`.
 -   Precedence is: `CLI argument` > `config file` > built-in default.
 
-Run all findings through Ollama in batches without prompts:
+Run all findings through LLM in batches without prompts:
 
 ```powershell
 python nfr_scan.py --path C:developmentmy-repo --rules rules/all_rules.json --max-llm 60 --auto-continue-batches
@@ -136,7 +136,8 @@ LLM batching behavior:
 
 -   `--max-llm` is the LLM batch size (default `60`).
 -   `--regex-workers` controls regex rule parallelism (default `1`).
--   `--llm-workers` controls parallel Ollama requests per batch (default `1`).
+-   `--llm-provider` selects provider (`ollama`, `openai`, `openrouter`, `xai`, `gemini`; default `ollama`).
+-   `--llm-workers` controls parallel LLM requests per batch (default `1`).
 -   For local stability, start with `--llm-workers 2` and increase gradually if hardware has headroom.
 -   `--prioritize-llm-queue` (default on) sends higher-priority findings first (S1/S2 and higher-confidence hints).
 -   `--dedup-before-llm` (default on) clusters similar findings (same file/function/rule/match) and sends representative items to LLM.
@@ -158,6 +159,9 @@ LLM batching behavior:
   `NFR-FE-005B` (generic raw HTML usage, S3 review warning).
 -   FE/Razor packs exclude common vendor/minified paths by default to reduce non-actionable noise.
 -   LLM patch guard marks no-op diffs as `patch_quality=no_op` and downgrades patch output to `unknown`.
+-   S1/S2 findings now bias the LLM prompt toward returning a minimal safe patch where possible.
+-   Reports include `summary.patch_metrics` (`generated`, `unknown`, `no_op_dropped`, `valid_quality`, `total_reviewed`).
+-   UI detail pane always shows patch status and displays a “Patch unavailable” message when patch content is `unknown`.
 -   Incremental mode is on by default (`--incremental`): only new/changed findings are sent to LLM versus persisted baseline.
 -   Use `--no-incremental` for full scan mode.
 -   Baseline persistence defaults to `<output-dir>/<baseline-dir>/<project>.json` where `--baseline-dir` defaults to `baselines`.
@@ -165,7 +169,12 @@ LLM batching behavior:
 -   Retries are used for retriable failures (timeout, connection errors, HTTP `429`, HTTP `5xx`). Non-retriable failures are logged and fallback review is used.
 -   After each batch, interactive runs ask whether to continue with the next batch.
 -   Use `--auto-continue-batches` for unattended runs (process all batches automatically).
--   Use `--max-llm 0` to skip Ollama review.
+-   Use `--max-llm 0` to skip LLM review.
+-   Provider env wiring:
+-   `openai`: `OPENAI_API_KEY`, optional `OPENAI_MODEL`, `OPENAI_BASE_URL`
+-   `openrouter`: `OPENROUTER_API_KEY`, optional `OPENROUTER_MODEL`, `OPENROUTER_BASE_URL`
+-   `xai`: `XAI_API_KEY`, optional `XAI_MODEL`, `XAI_BASE_URL`
+-   `gemini`: `GEMINI_API_KEY`, optional `GEMINI_MODEL`, `GEMINI_BASE_URL`
 -   Queue/progress is written to `findings_queue__<project>__<timestamp>.json`.
 -   Resume a stopped run with `--resume-queue <path-to-findings_queue__...json>`; pending findings continue in the same output files.
 -   When `--resume-queue` is used, the queue state is the source of truth for pending/reviewed items and original output file names.
@@ -182,12 +191,25 @@ Default parameter values (from `nfr_scan_config.json`):
 -   `max_findings`: `300`
 -   `regex_workers`: `1`
 -   `max_llm`: `60`
+-   `llm_provider`: `ollama`
 -   `auto_continue_batches`: `false`
 -   `llm_workers`: `1`
 -   `llm_retries`: `2`
 -   `llm_retry_backoff_seconds`: `1.5`
 -   `llm_connect_timeout_seconds`: `20.0`
 -   `llm_read_timeout_seconds`: `120.0`
+-   `openai_api_key`: `""`
+-   `openai_model`: `""`
+-   `openai_base_url`: `""`
+-   `openrouter_api_key`: `""`
+-   `openrouter_model`: `""`
+-   `openrouter_base_url`: `""`
+-   `xai_api_key`: `""`
+-   `xai_model`: `""`
+-   `xai_base_url`: `""`
+-   `gemini_api_key`: `""`
+-   `gemini_model`: `""`
+-   `gemini_base_url`: `""`
 -   `llm_cache_file`: `llm_review_cache.json`
 -   `use_llm_cache`: `true`
 -   `dedup_before_llm`: `true`

@@ -62,6 +62,9 @@ Rule:
 Rule-Specific Guidance:
 {rule_guidance}
 
+Patch Guidance:
+{patch_guidance}
+
 File: {file_path}
 Line: {line}
 Snippet:
@@ -80,7 +83,7 @@ def load_env():
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="NFR Audit Workbench scan + Ollama review")
+    parser = argparse.ArgumentParser(description="NFR Audit Workbench scan + LLM review")
     parser.add_argument(
         "--config",
         default=DEFAULT_CONFIG_PATH,
@@ -120,7 +123,12 @@ def parse_args():
         "--max-llm",
         type=int,
         default=60,
-        help="LLM batch size. Use 0 to skip Ollama review.",
+        help="LLM batch size. Use 0 to skip LLM review.",
+    )
+    parser.add_argument(
+        "--llm-provider",
+        default="ollama",
+        help="LLM provider: ollama|openai|openrouter|xai|gemini.",
     )
     parser.add_argument(
         "--auto-continue-batches",
@@ -131,32 +139,56 @@ def parse_args():
         "--llm-workers",
         type=int,
         default=1,
-        help="Concurrent Ollama requests per batch (1 keeps sequential behavior).",
+        help="Concurrent LLM requests per batch (1 keeps sequential behavior).",
     )
     parser.add_argument(
         "--llm-retries",
         type=int,
         default=2,
-        help="Retries for retriable Ollama failures (timeout/connection/5xx/429).",
+        help="Retries for retriable LLM failures (timeout/connection/5xx/429).",
     )
     parser.add_argument(
         "--llm-retry-backoff-seconds",
         type=float,
         default=1.5,
-        help="Base backoff seconds for Ollama retries (exponential: base, 2x, 4x...).",
+        help="Base backoff seconds for LLM retries (exponential: base, 2x, 4x...).",
     )
     parser.add_argument(
         "--llm-connect-timeout-seconds",
         type=float,
         default=20.0,
-        help="Connect timeout for Ollama HTTP requests.",
+        help="Connect timeout for LLM HTTP requests.",
     )
     parser.add_argument(
         "--llm-read-timeout-seconds",
         type=float,
         default=120.0,
-        help="Read timeout for Ollama HTTP requests.",
+        help="Read timeout for LLM HTTP requests.",
     )
+    parser.add_argument(
+        "--openai-api-key",
+        default="",
+        help="OpenAI API key. If empty, reads OPENAI_API_KEY/NFR_OPENAI_API_KEY from env.",
+    )
+    parser.add_argument(
+        "--openai-model",
+        default="",
+        help="OpenAI model name. If empty, reads OPENAI_MODEL/NFR_OPENAI_MODEL from env.",
+    )
+    parser.add_argument(
+        "--openai-base-url",
+        default="",
+        help="OpenAI base URL. Default: https://api.openai.com/v1",
+    )
+    parser.add_argument("--openrouter-api-key", default="", help="OpenRouter API key (optional when set in env).")
+    parser.add_argument("--openrouter-model", default="", help="OpenRouter model (optional when set in env).")
+    parser.add_argument("--openrouter-base-url", default="", help="OpenRouter base URL (default: https://openrouter.ai/api/v1).")
+    parser.add_argument("--xai-api-key", default="", help="xAI API key (optional when set in env).")
+    parser.add_argument("--xai-model", default="", help="xAI model (optional when set in env).")
+    parser.add_argument("--xai-base-url", default="", help="xAI base URL (default: https://api.x.ai/v1).")
+    parser.add_argument("--gemini-api-key", default="", help="Gemini API key (optional when set in env).")
+    parser.add_argument("--gemini-model", default="", help="Gemini model (optional when set in env).")
+    parser.add_argument("--gemini-base-url", default="", help="Gemini base URL (default: https://generativelanguage.googleapis.com/v1beta).")
     parser.add_argument(
         "--llm-cache-file",
         default="llm_review_cache.json",
@@ -1498,7 +1530,7 @@ def _patch_quality(patch_text):
     return "valid"
 
 
-def _classify_ollama_error(exc):
+def _classify_llm_error(exc):
     if isinstance(exc, ValueError) and "JSON" in str(exc):
         return False, "parse_error"
     if isinstance(exc, requests.exceptions.Timeout):
@@ -1515,6 +1547,163 @@ def _classify_ollama_error(exc):
             return True, f"http_{status}"
         return False, f"http_{status}" if status is not None else "http_error"
     return False, exc.__class__.__name__
+
+
+def _canonical_provider_name(value):
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "ollama": "ollama",
+        "openai": "openai",
+        "openrouter": "openrouter",
+        "xai": "xai",
+        "grok": "xai",
+        "gemini": "gemini",
+        "google": "gemini",
+    }
+    return aliases.get(raw, raw or "ollama")
+
+
+def _provider_label(provider):
+    name = _canonical_provider_name(provider)
+    labels = {
+        "ollama": "Ollama",
+        "openai": "OpenAI",
+        "openrouter": "OpenRouter",
+        "xai": "xAI",
+        "gemini": "Gemini",
+    }
+    return labels.get(name, name)
+
+
+def _openai_like_extract_content(resp_json):
+    choices = resp_json.get("choices", [])
+    if not choices:
+        return ""
+    message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+    content = message.get("content", "")
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if text:
+                    parts.append(str(text))
+        return "\n".join(parts)
+    return str(content or "")
+
+
+def _openai_extract_content(resp_json):
+    return _openai_like_extract_content(resp_json)
+
+
+def _gemini_extract_content(resp_json):
+    candidates = resp_json.get("candidates", [])
+    if not candidates:
+        return ""
+    first = candidates[0] if isinstance(candidates[0], dict) else {}
+    content = first.get("content", {})
+    parts = content.get("parts", []) if isinstance(content, dict) else []
+    out = []
+    for p in parts:
+        if isinstance(p, dict) and p.get("text"):
+            out.append(str(p["text"]))
+    return "\n".join(out)
+
+
+def _resolve_llm_runtime(args):
+    provider = _canonical_provider_name(
+        getattr(args, "llm_provider", "") or os.getenv("NFR_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "ollama"
+    )
+    if provider == "openai":
+        return {
+            "provider": provider,
+            "model": getattr(args, "openai_model", "") or os.getenv("NFR_OPENAI_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini",
+            "base_url": getattr(args, "openai_base_url", "") or os.getenv("NFR_OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1",
+            "api_key": getattr(args, "openai_api_key", "") or os.getenv("NFR_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY") or "",
+        }
+    if provider == "openrouter":
+        return {
+            "provider": provider,
+            "model": getattr(args, "openrouter_model", "") or os.getenv("NFR_OPENROUTER_MODEL") or os.getenv("OPENROUTER_MODEL") or "openai/gpt-4o-mini",
+            "base_url": getattr(args, "openrouter_base_url", "") or os.getenv("NFR_OPENROUTER_BASE_URL") or os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1",
+            "api_key": getattr(args, "openrouter_api_key", "") or os.getenv("NFR_OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY") or "",
+        }
+    if provider == "xai":
+        return {
+            "provider": provider,
+            "model": getattr(args, "xai_model", "") or os.getenv("NFR_XAI_MODEL") or os.getenv("XAI_MODEL") or "grok-beta",
+            "base_url": getattr(args, "xai_base_url", "") or os.getenv("NFR_XAI_BASE_URL") or os.getenv("XAI_BASE_URL") or "https://api.x.ai/v1",
+            "api_key": getattr(args, "xai_api_key", "") or os.getenv("NFR_XAI_API_KEY") or os.getenv("XAI_API_KEY") or "",
+        }
+    if provider == "gemini":
+        return {
+            "provider": provider,
+            "model": getattr(args, "gemini_model", "") or os.getenv("NFR_GEMINI_MODEL") or os.getenv("GEMINI_MODEL") or "gemini-1.5-flash",
+            "base_url": getattr(args, "gemini_base_url", "") or os.getenv("NFR_GEMINI_BASE_URL") or os.getenv("GEMINI_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta",
+            "api_key": getattr(args, "gemini_api_key", "") or os.getenv("NFR_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or "",
+        }
+    return {
+        "provider": "ollama",
+        "model": os.getenv("NFR_OLLAMA_MODEL") or os.getenv("OLLAMA_MODEL") or "qwen3-coder:30b",
+        "base_url": os.getenv("NFR_OLLAMA_BASE_URL") or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434",
+        "api_key": "",
+    }
+
+
+def _provider_requires_key(provider):
+    return _canonical_provider_name(provider) in {"openai", "openrouter", "xai", "gemini"}
+
+
+def _send_llm_request(
+    provider,
+    model,
+    base_url,
+    api_key,
+    prompt,
+    temperature,
+    connect_timeout_seconds,
+    read_timeout_seconds,
+):
+    provider_name = _canonical_provider_name(provider)
+    timeout = (float(connect_timeout_seconds), float(read_timeout_seconds))
+    if provider_name in {"openai", "openrouter", "xai"}:
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+        body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": temperature,
+        }
+        resp = requests.post(url, headers=headers, json=body, timeout=timeout)
+        resp.raise_for_status()
+        return _openai_like_extract_content(resp.json())
+    if provider_name == "gemini":
+        url = f"{base_url.rstrip('/')}/models/{model}:generateContent"
+        headers = {"Content-Type": "application/json"}
+        body = {
+            "contents": [{"role": "user", "parts": [{"text": f"{SYSTEM_PROMPT}\n\n{prompt}"}]}],
+            "generationConfig": {"temperature": temperature},
+        }
+        resp = requests.post(url, params={"key": api_key}, headers=headers, json=body, timeout=timeout)
+        resp.raise_for_status()
+        return _gemini_extract_content(resp.json())
+
+    url = f"{base_url.rstrip('/')}/api/chat"
+    body = {
+        "model": model,
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        "options": {"temperature": temperature},
+    }
+    resp = requests.post(url, json=body, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json().get("message", {}).get("content", "")
 
 
 def _slim_snippet_for_prompt(finding):
@@ -1561,8 +1750,10 @@ def _slim_snippet_for_prompt(finding):
 
 def _review_single_finding(
     finding,
+    provider,
     model,
-    url,
+    base_url,
+    api_key,
     temperature,
     retries,
     retry_backoff_seconds,
@@ -1571,6 +1762,16 @@ def _review_single_finding(
 ):
     started = time.perf_counter()
     rule_guidance = "N/A"
+    default_sev = str(finding.get("default_severity", "S3")).upper()
+    patch_guidance = (
+        "If safe patch cannot be produced from this snippet alone, set patch to 'unknown'. "
+        "Do not invent symbols or methods."
+    )
+    if default_sev in {"S1", "S2"}:
+        patch_guidance = (
+            "Prioritize producing a minimal, safe unified diff patch for this S1/S2 finding. "
+            "Use only symbols visible in snippet/context. If truly impossible, return patch='unknown'."
+        )
     if str(finding.get("rule_id", "")) == "NFR-API-004":
         rule_guidance = (
             "Do NOT suggest JsonConvert.SerializeObjectAsync (invalid API). "
@@ -1590,20 +1791,14 @@ def _review_single_finding(
     prompt = USER_TEMPLATE.format(
         rule_json=json.dumps(rule_payload, ensure_ascii=True),
         rule_guidance=rule_guidance,
+        patch_guidance=patch_guidance,
         file_path=finding["file"],
         line=finding["line"],
         snippet=_slim_snippet_for_prompt(finding),
     )
 
-    body = {
-        "model": model,
-        "stream": False,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        "options": {"temperature": temperature},
-    }
+    provider_name = _canonical_provider_name(provider)
+    provider_label = _provider_label(provider_name)
 
     parsed = None
     last_error_kind = ""
@@ -1613,23 +1808,26 @@ def _review_single_finding(
     for attempt in range(1, attempts_total + 1):
         attempts_used = attempt
         try:
-            resp = requests.post(
-                url,
-                json=body,
-                timeout=(float(connect_timeout_seconds), float(read_timeout_seconds)),
+            content = _send_llm_request(
+                provider_name,
+                model,
+                base_url,
+                api_key,
+                prompt,
+                temperature,
+                connect_timeout_seconds,
+                read_timeout_seconds,
             )
-            resp.raise_for_status()
-            content = resp.json().get("message", {}).get("content", "")
             parsed = _extract_json(content)
             if attempt > 1:
                 log_progress(
-                    f"Ollama request recovered after retry for {finding.get('rule_id', 'unknown')} "
+                    f"{provider_label} request recovered after retry for {finding.get('rule_id', 'unknown')} "
                     f"at {finding.get('file', 'unknown')}:{finding.get('line', 1)} "
                     f"(attempt {attempt}/{attempts_total})."
                 )
             break
         except Exception as exc:
-            retriable, error_kind = _classify_ollama_error(exc)
+            retriable, error_kind = _classify_llm_error(exc)
             last_error_kind = error_kind
             context = (
                 f"{finding.get('rule_id', 'unknown')} at "
@@ -1638,7 +1836,7 @@ def _review_single_finding(
             if retriable and attempt < attempts_total:
                 delay = max(0.0, float(retry_backoff_seconds)) * (2 ** (attempt - 1))
                 log_progress(
-                    f"Ollama request failed ({error_kind}) for {context}. "
+                    f"{provider_label} request failed ({error_kind}) for {context}. "
                     f"Attempt {attempt}/{attempts_total}. Retrying in {delay:.1f}s. Error: {exc}"
                 )
                 if delay > 0:
@@ -1646,7 +1844,7 @@ def _review_single_finding(
                 continue
 
             log_progress(
-                f"Ollama request failed ({error_kind}) for {context}. "
+                f"{provider_label} request failed ({error_kind}) for {context}. "
                 f"Attempt {attempt}/{attempts_total}. "
                 f"{'Non-retriable' if not retriable else 'Retries exhausted'}; using fallback review. Error: {exc}"
             )
@@ -1655,9 +1853,9 @@ def _review_single_finding(
                 "severity": finding["default_severity"],
                 "confidence": 0.2,
                 "title": f"LLM review failed for {finding['rule_id']}",
-                "why": f"Could not validate finding using Ollama: {exc}",
+                "why": f"Could not validate finding using {provider_label}: {exc}",
                 "recommendation": "Manual review required.",
-                "testing_notes": ["Re-run scan after ensuring Ollama model is available."],
+                "testing_notes": [f"Re-run scan after ensuring {provider_label} model/service is available."],
                 "patch": "unknown",
             }
             fallback_used = True
@@ -1697,10 +1895,12 @@ def _review_single_finding(
     return finding_out
 
 
-def review_with_ollama(
+def review_with_llm(
     findings,
+    provider,
     model,
     base_url,
+    api_key,
     temperature,
     workers=1,
     retries=2,
@@ -1709,18 +1909,23 @@ def review_with_ollama(
     read_timeout_seconds=120.0,
 ):
     reviewed = []
-    url = f"{base_url.rstrip('/')}/api/chat"
     total = len(findings)
     workers = max(1, int(workers or 1))
-    log_progress(f"Starting Ollama review for {total} finding(s) with model '{model}' (workers={workers}).")
+    provider_name = _canonical_provider_name(provider)
+    provider_label = _provider_label(provider_name)
+    log_progress(
+        f"Starting {provider_label} review for {total} finding(s) with model '{model}' (workers={workers})."
+    )
 
     if workers == 1 or total <= 1:
         for idx, finding in enumerate(findings, start=1):
             reviewed.append(
                 _review_single_finding(
                     finding,
+                    provider_name,
                     model,
-                    url,
+                    base_url,
+                    api_key,
                     temperature,
                     retries,
                     retry_backoff_seconds,
@@ -1729,7 +1934,7 @@ def review_with_ollama(
                 )
             )
             if idx % 10 == 0 or idx == total:
-                log_progress(f"Ollama review progress: {idx}/{total}")
+                log_progress(f"{provider_label} review progress: {idx}/{total}")
         return reviewed
 
     ordered = [None] * total
@@ -1739,8 +1944,10 @@ def review_with_ollama(
             executor.submit(
                 _review_single_finding,
                 finding,
+                provider_name,
                 model,
-                url,
+                base_url,
+                api_key,
                 temperature,
                 retries,
                 retry_backoff_seconds,
@@ -1754,7 +1961,7 @@ def review_with_ollama(
             ordered[idx] = future.result()
             done += 1
             if done % 10 == 0 or done == total:
-                log_progress(f"Ollama review progress: {done}/{total}")
+                log_progress(f"{provider_label} review progress: {done}/{total}")
 
     return [x for x in ordered if x is not None]
 
@@ -2051,6 +2258,19 @@ def summarize(reviewed):
     by_language = Counter(x.get("language", "unknown") for x in confirmed)
     by_file_type = Counter(x.get("file_type", "unknown") for x in confirmed)
     rule_quality = build_rule_quality_scoreboard(reviewed)
+    patch_quality = Counter(str((x.get("llm_review", {}) or {}).get("patch_quality", "unknown")).lower() for x in reviewed)
+    patch_generated = sum(
+        1
+        for x in reviewed
+        if str((x.get("llm_review", {}) or {}).get("patch", "unknown")).strip().lower() not in {"", "unknown"}
+    )
+    patch_metrics = {
+        "generated": patch_generated,
+        "unknown": int(patch_quality.get("unknown", 0)),
+        "no_op_dropped": int(patch_quality.get("no_op", 0)),
+        "valid_quality": int(patch_quality.get("valid", 0)),
+        "total_reviewed": len(reviewed),
+    }
 
     return {
         "all_reviewed": reviewed,
@@ -2065,6 +2285,7 @@ def summarize(reviewed):
         "by_language": dict(by_language),
         "by_file_type": dict(by_file_type),
         "rule_quality": rule_quality,
+        "patch_metrics": patch_metrics,
         "app_fix_backlog_count": sum(1 for x in confirmed if x.get("action_bucket", "app_code") != "dependency_risk"),
         "dependency_risk_count": sum(1 for x in confirmed if x.get("action_bucket", "app_code") == "dependency_risk"),
     }
@@ -2149,6 +2370,7 @@ def write_json_report(summary_data, output_dir, roslyn_meta, scan_meta):
             "by_file_type": summary_data["by_file_type"],
             "throughput": summary_data.get("throughput", {}),
             "rule_quality": summary_data.get("rule_quality", {}),
+            "patch_metrics": summary_data.get("patch_metrics", {}),
             "rule_precision_trend": summary_data.get("rule_precision_trend", {}),
             "rule_pipeline_stats": summary_data.get("rule_pipeline_stats", {}),
             "rule_noise_recommendations": summary_data.get("rule_noise_recommendations", []),
@@ -2196,6 +2418,7 @@ def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta):
     lines.append(f"- Action bucket split: {summary_data.get('by_action_bucket', {})}")
     lines.append(f"- App-fix backlog count: {summary_data.get('app_fix_backlog_count', 0)}")
     lines.append(f"- Dependency-risk count: {summary_data.get('dependency_risk_count', 0)}")
+    lines.append(f"- Patch metrics: {summary_data.get('patch_metrics', {})}")
     if summary_data.get("throughput"):
         lines.append(f"- Throughput: {summary_data.get('throughput')}")
     lines.append("")
@@ -2475,8 +2698,11 @@ def main():
     roslyn_stage_seconds = 0.0
     llm_stage_seconds = 0.0
 
-    model = os.getenv("NFR_OLLAMA_MODEL") or os.getenv("OLLAMA_MODEL") or "qwen3-coder:30b"
-    base_url = os.getenv("NFR_OLLAMA_BASE_URL") or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434"
+    runtime = _resolve_llm_runtime(args)
+    llm_provider = runtime["provider"]
+    model = runtime["model"]
+    base_url = runtime["base_url"]
+    llm_api_key = runtime["api_key"]
 
     scan_path = Path(args.path).resolve()
     output_dir = Path(args.output_dir)
@@ -2749,10 +2975,13 @@ def main():
     total_for_llm = len(reps_to_review)
 
     if batch_size <= 0:
-        log_progress("Skipping Ollama review because --max-llm is 0.")
+        log_progress("Skipping LLM review because --max-llm is 0.")
     elif total_for_llm == 0:
-        log_progress("No pending representative findings available for Ollama review.")
+        log_progress("No pending representative findings available for LLM review.")
     else:
+        if _provider_requires_key(llm_provider) and not llm_api_key:
+            label = _provider_label(llm_provider)
+            raise ValueError(f"{label} provider selected but API key is not set in CLI/env.")
         start = 0
         batch_no = 1
         max_workers = max(1, int(args.llm_workers))
@@ -2764,13 +2993,15 @@ def main():
             covered_count = sum(len(cluster_by_rep_key[rep["finding_key"]]["members"]) for rep in current_batch)
             log_progress(
                 f"Sending batch {batch_no}: {len(current_batch)} representative finding(s) "
-                f"covering {covered_count} finding(s) to Ollama ({start + 1}-{end} of {total_for_llm})"
+                f"covering {covered_count} finding(s) to {llm_provider} ({start + 1}-{end} of {total_for_llm})"
             )
             llm_batch_started = time.perf_counter()
-            batch_reviewed = review_with_ollama(
+            batch_reviewed = review_with_llm(
                 current_batch,
+                llm_provider,
                 model,
                 base_url,
+                llm_api_key,
                 args.temperature,
                 workers=current_workers,
                 retries=args.llm_retries,

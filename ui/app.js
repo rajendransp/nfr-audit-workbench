@@ -117,6 +117,14 @@ function benefitOf(f) {
   return String(get(f, ["llm_review", "benefit"], "medium"));
 }
 
+function patchStatusOf(f) {
+  var p = String(get(f, ["llm_review", "patch"], "unknown") || "unknown").toLowerCase();
+  var q = String(get(f, ["llm_review", "patch_quality"], "unknown") || "unknown").toLowerCase();
+  if (q === "no_op") return "no-op dropped";
+  if (p && p !== "unknown") return "available";
+  return "unknown";
+}
+
 function topLevelOf(f) {
   return String(f.top_level_category || "unknown").toLowerCase();
 }
@@ -190,7 +198,7 @@ function rowTemplate(f, i) {
   var conf = get(f, ["llm_review", "confidence"], "-");
   var rec = get(f, ["llm_review", "recommendation"], "");
   var snippet = f.snippet || f.match_text || "";
-  var patch = get(f, ["llm_review", "patch"], "unknown");
+  var patchStatus = patchStatusOf(f);
   var quickWin = quickWinOf(f);
   var effortBenefit = effortOf(f) + " / " + benefitOf(f);
 
@@ -209,7 +217,7 @@ function rowTemplate(f, i) {
   html += td("confidence", esc(conf));
   html += td("recommendation", esc(shortText(rec, 80)));
   html += td("snippet", esc(shortText(snippet.replace(/\s+/g, " "), 90)));
-  html += td("patch", (patch && patch !== "unknown") ? "Yes" : "No");
+  html += td("patch", esc(patchStatus));
   html += td("title", esc(title));
   html += '</tr>';
   return html;
@@ -298,7 +306,7 @@ function sortValue(f, col) {
   if (col === "confidence") return String(get(f, ["llm_review", "confidence"], 0));
   if (col === "recommendation") return String(get(f, ["llm_review", "recommendation"], ""));
   if (col === "snippet") return String(f.snippet || f.match_text || "");
-  if (col === "patch") return get(f, ["llm_review", "patch"], "unknown") === "unknown" ? "0" : "1";
+  if (col === "patch") return patchStatusOf(f);
   if (col === "title") return String(get(f, ["llm_review", "title"], f.rule_title || ""));
   return "";
 }
@@ -442,8 +450,13 @@ function showDetails(f) {
   content += detailBlock("Location", loc);
   content += detailBlock("Why", lr.why || "-", false);
   content += detailBlock("Recommendation", lr.recommendation || "-", false);
+  content += detailBlock("Patch Status", patchStatusOf(f));
   content += detailCodeBlock("Code Snippet", f.snippet || f.match_text || "", "code", f.language || "unknown", f.match_text || "");
-  if (lr.patch && String(lr.patch).toLowerCase() !== "unknown") content += detailCodeBlock("Suggested Patch", lr.patch, "diff", "diff", "");
+  if (lr.patch && String(lr.patch).toLowerCase() !== "unknown") {
+    content += detailCodeBlock("Suggested Patch", lr.patch, "diff", "diff", "");
+  } else {
+    content += detailBlock("Suggested Patch", "Patch unavailable for this finding.");
+  }
   detailsBodyEl.innerHTML = content;
 }
 
