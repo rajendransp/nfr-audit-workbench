@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 
@@ -64,6 +65,12 @@ Rule-Specific Guidance:
 
 Patch Guidance:
 {patch_guidance}
+
+Patch Playbook:
+{patch_playbook}
+
+Semantic Context:
+{semantic_context}
 
 File: {file_path}
 Line: {line}
@@ -166,6 +173,64 @@ def parse_args():
         help="Read timeout for LLM HTTP requests.",
     )
     parser.add_argument(
+        "--safe-ai-policy-mode",
+        default="warn",
+        help="Safe AI policy mode for external providers: off|warn|enforce.",
+    )
+    parser.add_argument(
+        "--safe-ai-allow-external-high-risk",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Allow sending high-risk findings to external providers.",
+    )
+    parser.add_argument(
+        "--safe-ai-redact-medium",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Redact medium-risk snippets before sending to external providers.",
+    )
+    parser.add_argument(
+        "--safe-ai-dry-run",
+        action="store_true",
+        help="Classify safe-AI risk (high/medium/low) and write report without running LLM review.",
+    )
+    parser.add_argument(
+        "--safe-ai-only",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run Safe-AI risk scan independently using safe-ai rules only (skips NFR/LLM pipeline).",
+    )
+    parser.add_argument(
+        "--safe-ai-rules",
+        nargs="+",
+        default=["rules/safe_ai_rules.json"],
+        help="One or more JSON rules files for safe-ai-only mode.",
+    )
+    parser.add_argument(
+        "--prefer-patch-s1s2",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="For S1/S2 findings, retry once with a patch-focused prompt when patch is unknown.",
+    )
+    parser.add_argument(
+        "--prefer-patch-all-severities",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Attempt patch-focused retry for non-S1/S2 findings when confidence is high enough.",
+    )
+    parser.add_argument(
+        "--patch-min-confidence",
+        type=float,
+        default=0.6,
+        help="Minimum confidence threshold to run patch-focused retry for non-S1/S2 findings.",
+    )
+    parser.add_argument(
+        "--patch-repair-retries",
+        type=int,
+        default=1,
+        help="When a generated patch is a no-op, retry with explicit no-op feedback this many times.",
+    )
+    parser.add_argument(
         "--openai-api-key",
         default="",
         help="OpenAI API key. If empty, reads OPENAI_API_KEY/NFR_OPENAI_API_KEY from env.",
@@ -193,6 +258,17 @@ def parse_args():
         "--llm-cache-file",
         default="llm_review_cache.json",
         help="LLM review cache file (relative to output dir unless absolute path).",
+    )
+    parser.add_argument(
+        "--patch-template-cache-file",
+        default="patch_template_cache.json",
+        help="Patch template cache file (relative to output dir unless absolute path).",
+    )
+    parser.add_argument(
+        "--use-patch-template-cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable/disable patch template cache derived from successful LLM patches.",
     )
     parser.add_argument(
         "--use-llm-cache",
@@ -352,6 +428,8 @@ def parse_args():
     parser.add_argument("--ci-threshold-s2", type=int, default=-1, help="CI threshold for S2 findings (-1 disables).")
     parser.add_argument("--ci-threshold-s3", type=int, default=-1, help="CI threshold for S3 findings (-1 disables).")
     parser.add_argument("--ci-threshold-s4", type=int, default=-1, help="CI threshold for S4 findings (-1 disables).")
+    parser.add_argument("--ci-min-patch-generated", type=int, default=-1, help="CI threshold: minimum generated patches required (-1 disables).")
+    parser.add_argument("--ci-max-patch-no-op", type=int, default=-1, help="CI threshold: maximum no-op patch count allowed (-1 disables).")
     parser.add_argument(
         "--ci-count-trust-tiers",
         default="llm_confirmed,fast_routed,fallback,regex_only,roslyn",
@@ -1002,6 +1080,7 @@ def _run_rg(path, rule, ignore_globs):
         "--max-columns",
         "240",
         "-P",
+        "-e",
         rule["pattern"],
         str(path),
     ]
@@ -1278,6 +1357,7 @@ def pre_scan(
                     "match_text": m["match_text"],
                     "snippet": snippet,
                     "confidence_hint": _coerce_float(rule.get("confidence_hint", 0.65), 0.65),
+                    "safe_ai_risk_hint": str(rule.get("safe_ai_risk", "")).strip().lower(),
                     "action_bucket": "dependency_risk" if dependency_risk else "app_code",
                     "action_hint": "upgrade_dependency_or_csp" if dependency_risk else "app_fix_backlog",
                 }
@@ -1654,6 +1734,277 @@ def _provider_requires_key(provider):
     return _canonical_provider_name(provider) in {"openai", "openrouter", "xai", "gemini"}
 
 
+def _is_local_host(host):
+    if not host:
+        return False
+    h = str(host).strip().lower()
+    return h in {"localhost", "127.0.0.1", "::1"}
+
+
+def _is_external_llm_boundary(provider_name, base_url):
+    p = _canonical_provider_name(provider_name)
+    if p in {"openai", "openrouter", "xai", "gemini"}:
+        return True
+    if p == "ollama":
+        try:
+            host = urlparse(str(base_url or "")).hostname
+        except Exception:
+            host = ""
+        return not _is_local_host(host)
+    return True
+
+
+def _ai_policy_risk_for_finding(finding):
+    hint = str(finding.get("safe_ai_risk_hint", "") or "").strip().lower()
+    if hint in {"high", "medium", "low"}:
+        return hint
+    hay = " ".join(
+        [
+            str(finding.get("rule_id", "")),
+            str(finding.get("rule_title", "")),
+            str(finding.get("file", "")),
+            str(finding.get("match_text", "")),
+            str(finding.get("snippet", "")),
+        ]
+    ).lower()
+    high_re = [
+        r"\bauth\b",
+        r"\bidentity\b",
+        r"\bjwt\b",
+        r"\btoken\b",
+        r"\boauth\b",
+        r"\bopenid\b",
+        r"\bsso\b",
+        r"\bsecret\b",
+        r"\bprivate[_\s-]?key\b",
+        r"\bapi[_\s-]?key\b",
+        r"\bclient[_\s-]?secret\b",
+        r"\bencrypt(ion|ed)?\b",
+        r"\bdecrypt(ion|ed)?\b",
+        r"\bkey[_\s-]?vault\b",
+        r"\btenant\b",
+        r"\bmulti[-\s]?tenant\b",
+        r"\bclaims?\b",
+        r"\bconnectionstring\b",
+    ]
+    if any(re.search(p, hay) for p in high_re):
+        return "high"
+    medium_re = [
+        r"\bbusiness\b",
+        r"\blicen(s|c)e\b",
+        r"\bsubscription\b",
+        r"\brate[_\s-]?limit\b",
+        r"\bfeature[_\s-]?flag\b",
+        r"\bgating\b",
+        r"\bbilling\b",
+    ]
+    if any(re.search(p, hay) for p in medium_re):
+        return "medium"
+    return "low"
+
+
+def _redact_snippet_for_external(snippet):
+    text = str(snippet or "")
+    rules = [
+        (r"(?i)(secret|password|token|api[_\s-]?key|client[_\s-]?secret|connectionstring)\s*[:=]\s*['\"][^'\"]+['\"]", r"\1 = \"REDACTED\""),
+        (r"(?i)(secret|password|token|api[_\s-]?key|client[_\s-]?secret|connectionstring)\s*[:=]\s*[^,\s;]+", r"\1 = REDACTED"),
+        (r"eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+", "REDACTED_JWT"),
+    ]
+    for pat, repl in rules:
+        text = re.sub(pat, repl, text)
+    return text
+
+
+def _build_policy_blocked_result(finding, policy_mode, policy_risk, external_boundary):
+    parsed = {
+        "isIssue": True,
+        "severity": finding.get("default_severity", "S3"),
+        "confidence": 0.2,
+        "title": f"LLM review blocked by safe AI policy for {finding.get('rule_id','unknown')}",
+        "why": (
+            f"External LLM transmission blocked ({policy_mode}) for {policy_risk}-risk snippet. "
+            "Manual review required."
+        ),
+        "recommendation": "Review internally or use local-only model for sensitive code.",
+        "testing_notes": ["Use local LLM or redacted snippet for external review."],
+        "patch": "unknown",
+        "patch_quality": "unknown",
+        "patch_attention": "unavailable",
+        "patch_attention_reason": "policy_blocked",
+    }
+    finding_out = dict(finding)
+    finding_out["llm_review"] = parsed
+    finding_out["llm_transport"] = {
+        "attempts": 0,
+        "attempts_allowed": 0,
+        "fallback_used": True,
+        "error_kind": "policy_blocked",
+        "from_cache": False,
+        "recovered_after_retry": False,
+        "elapsed_ms": 0.0,
+    }
+    finding_out["llm_error_kind"] = "policy_blocked"
+    finding_out["llm_attempts"] = 0
+    finding_out["llm_retried"] = False
+    finding_out["ai_policy"] = {
+        "mode": policy_mode,
+        "risk": policy_risk,
+        "external_boundary": bool(external_boundary),
+        "blocked": True,
+        "redacted": False,
+    }
+    return finding_out
+
+
+def _patch_playbook_for_rule(rule_id):
+    rid = str(rule_id or "").upper()
+    playbooks = {
+        "NFR-DOTNET-003": "Prefer async/await over .Result/.Wait/GetAwaiter().GetResult(). Update signatures to async Task and propagate await safely.",
+        "NFR-DOTNET-001": "Add CancellationToken parameter (ct) and pass ct to HttpClient async methods. Avoid CancellationToken.None in request paths.",
+        "NFR-API-001": "Add CancellationToken to controller action signature and pass it through service/repo async calls.",
+        "NFR-API-016": "Propagate existing CancellationToken from controller to all downstream async operations.",
+        "NFR-FE-005A": "For dynamic HTML sources, sanitize with DOMPurify before assigning to innerHTML/dangerouslySetInnerHTML.",
+        "NFR-FE-005B": "If raw HTML usage is required, sanitize; otherwise prefer textContent or safe render APIs.",
+        "NFR-DOTNET-014": "Replace empty catch with explicit logging and rethrow unless swallowing is intentional and documented.",
+    }
+    return playbooks.get(rid, "Keep patch minimal, local, and compile-safe. Avoid changing public signatures unless required.")
+
+
+def _extract_class_hint(snippet):
+    text = str(snippet or "")
+    pats = [
+        r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+        r"\binterface\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+        r"\bnamespace\s+([A-Za-z_][A-Za-z0-9_.]*)\b",
+    ]
+    for pat in pats:
+        m = re.search(pat, text)
+        if m:
+            return m.group(1)
+    return "unknown_class"
+
+
+def _semantic_context_for_finding(finding):
+    snippet = str(finding.get("snippet") or "")
+    function_hint = _extract_function_hint(snippet)
+    class_hint = _extract_class_hint(snippet)
+    return (
+        f"class_hint={class_hint}; function_hint={function_hint}; "
+        f"language={finding.get('language','unknown')}; file_type={finding.get('file_type','unknown')}"
+    )
+
+
+def _is_unified_diff_like(patch_text):
+    text = str(patch_text or "")
+    if not text.strip() or text.strip().lower() == "unknown":
+        return False
+    has_header = ("--- " in text and "+++ " in text)
+    has_hunk = "@@" in text
+    has_delta = any(line.startswith("+") or line.startswith("-") for line in text.splitlines())
+    return bool(has_header and has_hunk and has_delta)
+
+
+def _confidence_for_patch_retry(parsed, finding):
+    try:
+        if parsed and parsed.get("confidence") is not None:
+            return float(parsed.get("confidence"))
+    except Exception:
+        pass
+    try:
+        if finding.get("confidence_hint") is not None:
+            return float(finding.get("confidence_hint"))
+    except Exception:
+        pass
+    return float(_source_confidence_hint(finding))
+
+
+def _should_attempt_patch_retry(parsed, finding, prefer_patch_s1s2, prefer_patch_all, patch_min_confidence):
+    sev = str((parsed or {}).get("severity") or finding.get("default_severity") or "S3").upper()
+    if sev in {"S1", "S2"} and bool(prefer_patch_s1s2):
+        return True
+    if not bool(prefer_patch_all):
+        return False
+    return _confidence_for_patch_retry(parsed, finding) >= float(patch_min_confidence or 0.0)
+
+
+def _classify_patch_attention(finding, parsed):
+    patch = str((parsed or {}).get("patch", "unknown") or "unknown")
+    p = patch.strip().lower()
+    if p in {"", "unknown"}:
+        return "unavailable", "no_patch"
+    lower = patch.lower()
+    risky_tokens = [
+        "cancellationtoken",
+        "task<",
+        "public ",
+        "private ",
+        "protected ",
+        "interface ",
+        "class ",
+        "throw;",
+    ]
+    if any(tok in lower for tok in risky_tokens):
+        return "needs_attention", "signature_or_behavior_change"
+    return "safe", "local_change"
+
+
+def _patch_template_key(finding):
+    snippet = finding.get("snippet") or finding.get("match_text") or ""
+    func = _extract_function_hint(snippet)
+    raw = f"{finding.get('rule_id','unknown')}|{func}|{_normalize_text_for_key(finding.get('match_text') or '')}"
+    return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _resolve_patch_template_cache_path(cache_file, output_dir):
+    p = Path(cache_file or "patch_template_cache.json")
+    if not p.is_absolute():
+        p = Path(output_dir) / p
+    return p
+
+
+def load_patch_template_cache(cache_path):
+    p = Path(cache_path)
+    if not p.exists() or not p.is_file():
+        return {}
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8", errors="ignore"))
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    return {}
+
+
+def save_patch_template_cache(cache_path, cache_data):
+    p = Path(cache_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
+
+
+def _apply_patch_template_if_available(item, template_cache):
+    review = (item.get("llm_review", {}) or {})
+    patch = str(review.get("patch", "unknown") or "unknown").strip().lower()
+    if patch != "unknown":
+        return item, False
+    key = _patch_template_key(item)
+    cached = template_cache.get(key) if isinstance(template_cache, dict) else None
+    if not isinstance(cached, dict):
+        return item, False
+    candidate = str(cached.get("patch", "unknown") or "unknown")
+    if candidate.strip().lower() == "unknown":
+        return item, False
+    out = dict(item)
+    out_review = dict(review)
+    out_review["patch"] = candidate
+    out_review["patch_quality"] = _patch_quality(candidate)
+    out_review["patch_from_template_cache"] = True
+    attention, reason = _classify_patch_attention(out, out_review)
+    out_review["patch_attention"] = attention
+    out_review["patch_attention_reason"] = reason
+    out["llm_review"] = out_review
+    return out, True
+
+
 def _send_llm_request(
     provider,
     model,
@@ -1704,6 +2055,134 @@ def _send_llm_request(
     resp = requests.post(url, json=body, timeout=timeout)
     resp.raise_for_status()
     return resp.json().get("message", {}).get("content", "")
+
+
+def _maybe_retry_patch_for_unknown(
+    finding,
+    parsed,
+    provider_name,
+    provider_label,
+    model,
+    base_url,
+    api_key,
+    temperature,
+    connect_timeout_seconds,
+    read_timeout_seconds,
+    prefer_patch_s1s2,
+    prefer_patch_all,
+    patch_min_confidence,
+    snippet_for_prompt,
+):
+    is_issue = bool((parsed or {}).get("isIssue", False))
+    patch_value = str((parsed or {}).get("patch", "unknown") or "unknown").strip().lower()
+    if not is_issue or patch_value != "unknown":
+        return parsed
+    if not _should_attempt_patch_retry(parsed, finding, prefer_patch_s1s2, prefer_patch_all, patch_min_confidence):
+        return parsed
+
+    patch_prompt = (
+        "Return JSON only with key 'patch'.\n"
+        "Generate a minimal, safe unified diff patch for this finding.\n"
+        "Use only symbols visible in snippet/context. If impossible, return {\"patch\":\"unknown\"}.\n\n"
+        f"Rule ID: {finding.get('rule_id','unknown')}\n"
+        f"Patch Playbook: {_patch_playbook_for_rule(finding.get('rule_id',''))}\n"
+        f"Semantic Context: {_semantic_context_for_finding(finding)}\n"
+        f"File: {finding.get('file','unknown')}\n"
+        f"Line: {finding.get('line',1)}\n"
+        "Snippet:\n"
+        f"{snippet_for_prompt}\n"
+    )
+    try:
+        content = _send_llm_request(
+            provider_name,
+            model,
+            base_url,
+            api_key,
+            patch_prompt,
+            temperature,
+            connect_timeout_seconds,
+            read_timeout_seconds,
+        )
+        patch_only = _extract_json(content)
+        candidate = str((patch_only or {}).get("patch", "unknown") or "unknown")
+        if candidate.strip().lower() != "unknown":
+            parsed["patch"] = candidate
+            parsed["patch_retry_used"] = True
+            log_progress(
+                f"{provider_label} patch retry succeeded for {finding.get('rule_id','unknown')} "
+                f"at {finding.get('file','unknown')}:{finding.get('line',1)}."
+            )
+    except Exception as exc:
+        log_progress(
+            f"{provider_label} patch retry failed for {finding.get('rule_id','unknown')} "
+            f"at {finding.get('file','unknown')}:{finding.get('line',1)}. Error: {exc}"
+        )
+    return parsed
+
+
+def _retry_patch_after_noop(
+    finding,
+    parsed,
+    provider_name,
+    provider_label,
+    model,
+    base_url,
+    api_key,
+    temperature,
+    connect_timeout_seconds,
+    read_timeout_seconds,
+    repair_retries,
+    snippet_for_prompt,
+):
+    attempts = max(0, int(repair_retries or 0))
+    if attempts <= 0:
+        return parsed
+    patch = str((parsed or {}).get("patch", "unknown") or "unknown")
+    if _patch_quality(patch) != "no_op":
+        return parsed
+    for attempt in range(1, attempts + 1):
+        repair_prompt = (
+            "Return JSON only with key 'patch'.\n"
+            "Previous patch was a NO-OP (no effective code changes).\n"
+            "Provide a corrected unified diff with real line changes, minimal and safe.\n"
+            "Do not repeat identical +/- lines. If impossible, return {\"patch\":\"unknown\"}.\n\n"
+            f"Rule ID: {finding.get('rule_id','unknown')}\n"
+            f"Patch Playbook: {_patch_playbook_for_rule(finding.get('rule_id',''))}\n"
+            f"Semantic Context: {_semantic_context_for_finding(finding)}\n"
+            f"File: {finding.get('file','unknown')}\n"
+            f"Line: {finding.get('line',1)}\n"
+            "Snippet:\n"
+            f"{snippet_for_prompt}\n\n"
+            "Previous no-op patch:\n"
+            f"{patch}\n"
+        )
+        try:
+            content = _send_llm_request(
+                provider_name,
+                model,
+                base_url,
+                api_key,
+                repair_prompt,
+                temperature,
+                connect_timeout_seconds,
+                read_timeout_seconds,
+            )
+            repaired = _extract_json(content)
+            candidate = str((repaired or {}).get("patch", "unknown") or "unknown")
+            parsed["patch"] = candidate
+            parsed["patch_repair_attempts"] = attempt
+            if _patch_quality(candidate) != "no_op":
+                log_progress(
+                    f"{provider_label} patch repair succeeded for {finding.get('rule_id','unknown')} "
+                    f"at {finding.get('file','unknown')}:{finding.get('line',1)} (attempt {attempt}/{attempts})."
+                )
+                return parsed
+        except Exception as exc:
+            log_progress(
+                f"{provider_label} patch repair failed for {finding.get('rule_id','unknown')} "
+                f"at {finding.get('file','unknown')}:{finding.get('line',1)} (attempt {attempt}/{attempts}). Error: {exc}"
+            )
+    return parsed
 
 
 def _slim_snippet_for_prompt(finding):
@@ -1759,6 +2238,13 @@ def _review_single_finding(
     retry_backoff_seconds,
     connect_timeout_seconds,
     read_timeout_seconds,
+    prefer_patch_s1s2,
+    prefer_patch_all_severities,
+    patch_min_confidence,
+    patch_repair_retries,
+    safe_ai_policy_mode,
+    safe_ai_allow_external_high_risk,
+    safe_ai_redact_medium,
 ):
     started = time.perf_counter()
     rule_guidance = "N/A"
@@ -1772,6 +2258,28 @@ def _review_single_finding(
             "Prioritize producing a minimal, safe unified diff patch for this S1/S2 finding. "
             "Use only symbols visible in snippet/context. If truly impossible, return patch='unknown'."
         )
+    patch_playbook = _patch_playbook_for_rule(finding.get("rule_id", ""))
+    semantic_context = _semantic_context_for_finding(finding)
+    provider_name = _canonical_provider_name(provider)
+    provider_label = _provider_label(provider_name)
+    external_boundary = _is_external_llm_boundary(provider_name, base_url)
+    policy_mode = str(safe_ai_policy_mode or "warn").strip().lower()
+    if policy_mode not in {"off", "warn", "enforce"}:
+        policy_mode = "warn"
+    policy_risk = _ai_policy_risk_for_finding(finding)
+    snippet_for_prompt = _slim_snippet_for_prompt(finding)
+    policy_redacted = False
+    if external_boundary and policy_mode in {"warn", "enforce"}:
+        if policy_risk == "high" and not bool(safe_ai_allow_external_high_risk):
+            if policy_mode == "enforce":
+                return _build_policy_blocked_result(finding, policy_mode, policy_risk, external_boundary)
+            log_progress(
+                f"Safe AI policy warning: high-risk snippet sent to external provider for "
+                f"{finding.get('rule_id','unknown')} at {finding.get('file','unknown')}:{finding.get('line',1)}."
+            )
+        if policy_risk == "medium" and bool(safe_ai_redact_medium):
+            snippet_for_prompt = _redact_snippet_for_external(snippet_for_prompt)
+            policy_redacted = True
     if str(finding.get("rule_id", "")) == "NFR-API-004":
         rule_guidance = (
             "Do NOT suggest JsonConvert.SerializeObjectAsync (invalid API). "
@@ -1792,13 +2300,12 @@ def _review_single_finding(
         rule_json=json.dumps(rule_payload, ensure_ascii=True),
         rule_guidance=rule_guidance,
         patch_guidance=patch_guidance,
+        patch_playbook=patch_playbook,
+        semantic_context=semantic_context,
         file_path=finding["file"],
         line=finding["line"],
-        snippet=_slim_snippet_for_prompt(finding),
+        snippet=snippet_for_prompt,
     )
-
-    provider_name = _canonical_provider_name(provider)
-    provider_label = _provider_label(provider_name)
 
     parsed = None
     last_error_kind = ""
@@ -1871,12 +2378,57 @@ def _review_single_finding(
         parsed["quick_win"] = _infer_quick_win(sev, parsed["effort"], parsed["benefit"])
     else:
         parsed["quick_win"] = bool(parsed.get("quick_win"))
+    current_conf = _confidence_for_patch_retry(parsed, finding)
+    if sev not in {"S1", "S2"} and current_conf < float(patch_min_confidence or 0.0):
+        parsed["patch"] = "unknown"
+        parsed["patch_policy"] = "confidence_gated"
     parsed["patch_quality"] = _patch_quality(parsed.get("patch", "unknown"))
+    parsed = _maybe_retry_patch_for_unknown(
+        finding,
+        parsed,
+        provider_name,
+        provider_label,
+        model,
+        base_url,
+        api_key,
+        temperature,
+        connect_timeout_seconds,
+        read_timeout_seconds,
+        prefer_patch_s1s2,
+        prefer_patch_all_severities,
+        patch_min_confidence,
+        snippet_for_prompt,
+    )
+    parsed["patch_quality"] = _patch_quality(parsed.get("patch", "unknown"))
+    parsed = _retry_patch_after_noop(
+        finding,
+        parsed,
+        provider_name,
+        provider_label,
+        model,
+        base_url,
+        api_key,
+        temperature,
+        connect_timeout_seconds,
+        read_timeout_seconds,
+        patch_repair_retries,
+        snippet_for_prompt,
+    )
+    parsed["patch_quality"] = _patch_quality(parsed.get("patch", "unknown"))
+    if parsed["patch_quality"] == "valid" and not _is_unified_diff_like(parsed.get("patch", "")):
+        parsed["patch_quality"] = "unknown"
+        parsed["patch"] = "unknown"
+        notes = list(parsed.get("testing_notes", []) or [])
+        notes.append("Suggested patch was not a valid unified diff; manual fix proposal required.")
+        parsed["testing_notes"] = notes
     if parsed["patch_quality"] == "no_op":
         parsed["patch"] = "unknown"
         notes = list(parsed.get("testing_notes", []) or [])
         notes.append("Suggested patch was a no-op; manual fix proposal required.")
         parsed["testing_notes"] = notes
+    patch_attention, patch_attention_reason = _classify_patch_attention(finding, parsed)
+    parsed["patch_attention"] = patch_attention
+    parsed["patch_attention_reason"] = patch_attention_reason
 
     finding_out = dict(finding)
     finding_out["llm_review"] = parsed
@@ -1892,6 +2444,13 @@ def _review_single_finding(
     finding_out["llm_error_kind"] = last_error_kind
     finding_out["llm_attempts"] = attempts_used
     finding_out["llm_retried"] = attempts_used > 1
+    finding_out["ai_policy"] = {
+        "mode": policy_mode,
+        "risk": policy_risk,
+        "external_boundary": bool(external_boundary),
+        "blocked": False,
+        "redacted": bool(policy_redacted),
+    }
     return finding_out
 
 
@@ -1907,6 +2466,13 @@ def review_with_llm(
     retry_backoff_seconds=1.5,
     connect_timeout_seconds=20.0,
     read_timeout_seconds=120.0,
+    prefer_patch_s1s2=True,
+    prefer_patch_all_severities=True,
+    patch_min_confidence=0.6,
+    patch_repair_retries=1,
+    safe_ai_policy_mode="warn",
+    safe_ai_allow_external_high_risk=False,
+    safe_ai_redact_medium=True,
 ):
     reviewed = []
     total = len(findings)
@@ -1931,6 +2497,13 @@ def review_with_llm(
                     retry_backoff_seconds,
                     connect_timeout_seconds,
                     read_timeout_seconds,
+                    prefer_patch_s1s2,
+                    prefer_patch_all_severities,
+                    patch_min_confidence,
+                    patch_repair_retries,
+                    safe_ai_policy_mode,
+                    safe_ai_allow_external_high_risk,
+                    safe_ai_redact_medium,
                 )
             )
             if idx % 10 == 0 or idx == total:
@@ -1953,6 +2526,13 @@ def review_with_llm(
                 retry_backoff_seconds,
                 connect_timeout_seconds,
                 read_timeout_seconds,
+                prefer_patch_s1s2,
+                prefer_patch_all_severities,
+                patch_min_confidence,
+                patch_repair_retries,
+                safe_ai_policy_mode,
+                safe_ai_allow_external_high_risk,
+                safe_ai_redact_medium,
             ): idx
             for idx, finding in enumerate(findings)
         }
@@ -2259,17 +2839,32 @@ def summarize(reviewed):
     by_file_type = Counter(x.get("file_type", "unknown") for x in confirmed)
     rule_quality = build_rule_quality_scoreboard(reviewed)
     patch_quality = Counter(str((x.get("llm_review", {}) or {}).get("patch_quality", "unknown")).lower() for x in reviewed)
+    patch_attention = Counter(str((x.get("llm_review", {}) or {}).get("patch_attention", "unavailable")).lower() for x in reviewed)
     patch_generated = sum(
         1
         for x in reviewed
         if str((x.get("llm_review", {}) or {}).get("patch", "unknown")).strip().lower() not in {"", "unknown"}
+    )
+    template_applied = sum(
+        1 for x in reviewed if bool((x.get("llm_review", {}) or {}).get("patch_from_template_cache", False))
     )
     patch_metrics = {
         "generated": patch_generated,
         "unknown": int(patch_quality.get("unknown", 0)),
         "no_op_dropped": int(patch_quality.get("no_op", 0)),
         "valid_quality": int(patch_quality.get("valid", 0)),
+        "safe_generated": int(patch_attention.get("safe", 0)),
+        "needs_attention_generated": int(patch_attention.get("needs_attention", 0)),
+        "template_cache_applied": int(template_applied),
+        "attention_split": dict(patch_attention),
         "total_reviewed": len(reviewed),
+    }
+    ai_policy_metrics = {
+        "external_boundary_findings": sum(1 for x in reviewed if bool((x.get("ai_policy", {}) or {}).get("external_boundary", False))),
+        "blocked_findings": sum(1 for x in reviewed if bool((x.get("ai_policy", {}) or {}).get("blocked", False))),
+        "redacted_findings": sum(1 for x in reviewed if bool((x.get("ai_policy", {}) or {}).get("redacted", False))),
+        "high_risk_findings": sum(1 for x in reviewed if str((x.get("ai_policy", {}) or {}).get("risk", "")).lower() == "high"),
+        "medium_risk_findings": sum(1 for x in reviewed if str((x.get("ai_policy", {}) or {}).get("risk", "")).lower() == "medium"),
     }
 
     return {
@@ -2286,6 +2881,7 @@ def summarize(reviewed):
         "by_file_type": dict(by_file_type),
         "rule_quality": rule_quality,
         "patch_metrics": patch_metrics,
+        "ai_policy_metrics": ai_policy_metrics,
         "app_fix_backlog_count": sum(1 for x in confirmed if x.get("action_bucket", "app_code") != "dependency_risk"),
         "dependency_risk_count": sum(1 for x in confirmed if x.get("action_bucket", "app_code") == "dependency_risk"),
     }
@@ -2371,6 +2967,7 @@ def write_json_report(summary_data, output_dir, roslyn_meta, scan_meta):
             "throughput": summary_data.get("throughput", {}),
             "rule_quality": summary_data.get("rule_quality", {}),
             "patch_metrics": summary_data.get("patch_metrics", {}),
+            "ai_policy_metrics": summary_data.get("ai_policy_metrics", {}),
             "rule_precision_trend": summary_data.get("rule_precision_trend", {}),
             "rule_pipeline_stats": summary_data.get("rule_pipeline_stats", {}),
             "rule_noise_recommendations": summary_data.get("rule_noise_recommendations", []),
@@ -2402,6 +2999,158 @@ def write_fallback_report(summary_data, output_dir, scan_meta):
     return path
 
 
+def write_safe_ai_risk_report(findings, output_dir, scan_meta, provider_name, base_url):
+    external_boundary = _is_external_llm_boundary(provider_name, base_url)
+    items = []
+    counts = Counter()
+    for f in findings or []:
+        risk = _ai_policy_risk_for_finding(f)
+        counts[risk] += 1
+        items.append(
+            {
+                "finding_key": f.get("finding_key"),
+                "rule_id": f.get("rule_id"),
+                "source": f.get("source", "unknown"),
+                "file": f.get("file", "unknown"),
+                "line": f.get("line", 1),
+                "risk": risk,
+                "top_level_category": f.get("top_level_category", "unknown"),
+                "sub_category": f.get("sub_category", "unknown"),
+                "match_text": str(f.get("match_text", ""))[:500],
+            }
+        )
+    payload = {
+        "scan": scan_meta,
+        "provider": _provider_label(provider_name),
+        "external_boundary": bool(external_boundary),
+        "summary": {
+            "total_findings": len(items),
+            "high": int(counts.get("high", 0)),
+            "medium": int(counts.get("medium", 0)),
+            "low": int(counts.get("low", 0)),
+        },
+        "findings": items,
+    }
+    project = scan_meta.get("project", "project")
+    run_version = scan_meta.get("run_version", datetime.now().strftime("%Y%m%d_%H%M%S"))
+    out = Path(output_dir) / f"safe_ai_risk__{project}__{run_version}.json"
+    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    (Path(output_dir) / "safe_ai_risk.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return out
+
+
+def write_safe_ai_risk_markdown(risk_payload, output_dir, scan_meta):
+    summary = (risk_payload or {}).get("summary", {}) or {}
+    findings = (risk_payload or {}).get("findings", []) or []
+    provider = (risk_payload or {}).get("provider", "unknown")
+    external = bool((risk_payload or {}).get("external_boundary", False))
+    project = scan_meta.get("project", "project")
+    run_version = scan_meta.get("run_version", datetime.now().strftime("%Y%m%d_%H%M%S"))
+    path = Path(output_dir) / f"safe_ai_risk_digest__{project}__{run_version}.md"
+
+    lines = []
+    lines.append("# Safe AI Risk Digest")
+    lines.append("")
+    lines.append(f"- Provider: {provider}")
+    lines.append(f"- External boundary: {external}")
+    lines.append(f"- Total findings: {int(summary.get('total_findings', len(findings)))}")
+    lines.append(f"- High: {int(summary.get('high', 0))}")
+    lines.append(f"- Medium: {int(summary.get('medium', 0))}")
+    lines.append(f"- Low: {int(summary.get('low', 0))}")
+    lines.append("")
+
+    lines.append("## High-Risk Items (Top 100)")
+    lines.append("")
+    high = [f for f in findings if str(f.get("risk", "")).lower() == "high"]
+    if not high:
+        lines.append("- None")
+    else:
+        for item in high[:100]:
+            lines.append(
+                f"- `{item.get('rule_id', 'unknown')}` at "
+                f"`{item.get('file', 'unknown')}:{item.get('line', 1)}` "
+                f"category=`{item.get('top_level_category', 'unknown')}/{item.get('sub_category', 'unknown')}`"
+            )
+    lines.append("")
+
+    lines.append("## Guidance")
+    lines.append("")
+    lines.append("- High: local model only or manual review; block external providers.")
+    lines.append("- Medium: redact before external provider usage.")
+    lines.append("- Low: allowed under policy and standard review.")
+    lines.append("")
+
+    content = "\n".join(lines)
+    path.write_text(content, encoding="utf-8")
+    (Path(output_dir) / "safe_ai_risk_digest.md").write_text(content, encoding="utf-8")
+    return path
+
+
+def write_safe_ai_risk_sarif(risk_payload, output_dir, scan_meta):
+    findings = (risk_payload or {}).get("findings", []) or []
+    provider = (risk_payload or {}).get("provider", "unknown")
+    external = bool((risk_payload or {}).get("external_boundary", False))
+
+    rules = [
+        {
+            "id": "SAFE-AI-RISK",
+            "name": "Safe AI Risk Classification",
+            "shortDescription": {"text": "Snippet risk level for external AI boundary"},
+            "fullDescription": {
+                "text": "Classifies findings as high/medium/low for safe external AI usage."
+            },
+        }
+    ]
+
+    level_map = {"high": "error", "medium": "warning", "low": "note"}
+    results = []
+    for item in findings:
+        risk = str(item.get("risk", "low")).lower()
+        msg = (
+            f"Safe AI risk={risk}; provider={provider}; external_boundary={external}; "
+            f"rule_id={item.get('rule_id', 'unknown')}"
+        )
+        results.append(
+            {
+                "ruleId": "SAFE-AI-RISK",
+                "level": level_map.get(risk, "note"),
+                "message": {"text": msg},
+                "properties": {
+                    "safe_ai_risk": risk,
+                    "nfr_source": item.get("source", "unknown"),
+                    "top_level_category": item.get("top_level_category", "unknown"),
+                    "sub_category": item.get("sub_category", "unknown"),
+                },
+                "locations": [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": {"uri": item.get("file", "unknown")},
+                            "region": {"startLine": int(item.get("line", 1) or 1)},
+                        }
+                    }
+                ],
+            }
+        )
+
+    sarif = {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {"driver": {"name": "nfr_audit_safe_ai", "rules": rules}},
+                "results": results,
+            }
+        ],
+    }
+
+    project = scan_meta.get("project", "project")
+    run_version = scan_meta.get("run_version", datetime.now().strftime("%Y%m%d_%H%M%S"))
+    path = Path(output_dir) / f"safe_ai_risk__{project}__{run_version}.sarif"
+    path.write_text(json.dumps(sarif, indent=2), encoding="utf-8")
+    (Path(output_dir) / "safe_ai_risk.sarif").write_text(json.dumps(sarif, indent=2), encoding="utf-8")
+    return path
+
+
 def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta):
     path = Path(output_dir) / scan_meta["digest_file"]
     confirmed = summary_data["confirmed"]
@@ -2419,6 +3168,7 @@ def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta):
     lines.append(f"- App-fix backlog count: {summary_data.get('app_fix_backlog_count', 0)}")
     lines.append(f"- Dependency-risk count: {summary_data.get('dependency_risk_count', 0)}")
     lines.append(f"- Patch metrics: {summary_data.get('patch_metrics', {})}")
+    lines.append(f"- Safe AI policy metrics: {summary_data.get('ai_policy_metrics', {})}")
     if summary_data.get("throughput"):
         lines.append(f"- Throughput: {summary_data.get('throughput')}")
     lines.append("")
@@ -2665,6 +3415,8 @@ def evaluate_ci_policy(summary_data, args):
         "S2": int(getattr(args, "ci_threshold_s2", -1) or -1),
         "S3": int(getattr(args, "ci_threshold_s3", -1) or -1),
         "S4": int(getattr(args, "ci_threshold_s4", -1) or -1),
+        "patch_generated_min": int(getattr(args, "ci_min_patch_generated", -1) or -1),
+        "patch_no_op_max": int(getattr(args, "ci_max_patch_no_op", -1) or -1),
     }
 
     breaches = []
@@ -2675,10 +3427,18 @@ def evaluate_ci_policy(summary_data, args):
         value = int(by_sev.get(sev, 0))
         if threshold >= 0 and value > threshold:
             breaches.append(f"{sev}={value} > threshold={threshold}")
+    patch_metrics = summary_data.get("patch_metrics", {}) or {}
+    patch_generated = int(patch_metrics.get("generated", 0) or 0)
+    patch_no_op = int(patch_metrics.get("no_op_dropped", 0) or 0)
+    if thresholds["patch_generated_min"] >= 0 and patch_generated < thresholds["patch_generated_min"]:
+        breaches.append(f"patch_generated={patch_generated} < min_required={thresholds['patch_generated_min']}")
+    if thresholds["patch_no_op_max"] >= 0 and patch_no_op > thresholds["patch_no_op_max"]:
+        breaches.append(f"patch_no_op={patch_no_op} > max_allowed={thresholds['patch_no_op_max']}")
 
     messages = []
     scope_desc = ",".join(sorted(allowed_tiers))
     messages.append(f"CI policy scope trust_tiers=[{scope_desc}] count={len(scoped)}")
+    messages.append(f"Patch metrics: generated={patch_generated}, no_op={patch_no_op}")
     if mode == "hard-fail" and fallback_items:
         messages.append(
             f"Fallback findings present ({len(fallback_items)}); treated as warn-only in hard-fail mode."
@@ -2688,6 +3448,83 @@ def evaluate_ci_policy(summary_data, args):
     else:
         messages.append("CI policy passed.")
     return {"mode": mode, "breached": bool(breaches), "messages": messages}
+
+
+def run_safe_ai_only(scan_path, output_dir, args, llm_provider, base_url):
+    project_name = _project_name_from_scan_path(scan_path)
+    run_version = datetime.now().strftime("%Y%m%d_%H%M%S")
+    scan_meta = {
+        "project": project_name,
+        "run_version": run_version,
+        "scan_path": str(scan_path),
+    }
+
+    log_progress(f"Safe AI standalone scan started for path: {scan_path}")
+    log_progress(f"Output directory: {output_dir.resolve()}")
+
+    ignore_globs = load_ignore_globs(scan_path, args.ignore_file)
+    if ignore_globs:
+        log_progress(f"Loaded {len(ignore_globs)} ignore glob(s) from {args.ignore_file}")
+
+    safe_rules = load_rules(args.safe_ai_rules)
+    safe_rule_paths = _normalize_rule_paths(args.safe_ai_rules)
+    log_progress(f"Loaded {len(safe_rules)} safe-ai regex rule(s) from {', '.join(safe_rule_paths)}")
+
+    changed_lines_by_file = {}
+    if args.diff_base:
+        changed_lines_by_file = load_git_diff_filter(
+            scan_path,
+            args.diff_base,
+            args.diff_head,
+            files_only=bool(args.diff_files_only),
+        )
+        if changed_lines_by_file:
+            changed_files = len(changed_lines_by_file)
+            mode = "changed files" if args.diff_files_only else "changed lines"
+            log_progress(
+                f"Diff mode enabled ({mode}): base={args.diff_base}, head={args.diff_head}, files={changed_files}"
+            )
+        else:
+            log_progress("Diff mode returned no changes or could not be applied; scanning full scope.")
+
+    regex_started = time.perf_counter()
+    safe_findings, _ = pre_scan(
+        scan_path,
+        safe_rules,
+        args.context_lines,
+        args.max_findings,
+        ignore_globs,
+        regex_workers=args.regex_workers,
+        changed_lines_by_file=changed_lines_by_file,
+    )
+    regex_stage_seconds = time.perf_counter() - regex_started
+    log_progress(f"Safe AI regex pre-scan produced {len(safe_findings)} finding(s)")
+    log_progress(f"Safe AI regex stage timing: {regex_stage_seconds:.2f}s")
+
+    risk_path = write_safe_ai_risk_report(safe_findings, output_dir, scan_meta, llm_provider, base_url)
+    risk_payload = json.loads(risk_path.read_text(encoding="utf-8", errors="ignore"))
+    risk_md_path = write_safe_ai_risk_markdown(risk_payload, output_dir, scan_meta)
+    risk_sarif_path = write_safe_ai_risk_sarif(risk_payload, output_dir, scan_meta)
+
+    risk_summary = (risk_payload.get("summary", {}) or {})
+    log_progress(
+        "Safe AI standalone summary: "
+        f"total={risk_summary.get('total_findings', 0)}, "
+        f"high={risk_summary.get('high', 0)}, "
+        f"medium={risk_summary.get('medium', 0)}, "
+        f"low={risk_summary.get('low', 0)}, "
+        f"external_boundary={risk_payload.get('external_boundary', False)}"
+    )
+
+    print(
+        "Safe AI standalone scan complete. "
+        f"Total={risk_summary.get('total_findings', 0)} | "
+        f"High={risk_summary.get('high', 0)} | "
+        f"Medium={risk_summary.get('medium', 0)} | "
+        f"Low={risk_summary.get('low', 0)}"
+    )
+    print(f"Reports written: {risk_path.name}, {risk_md_path.name}, {risk_sarif_path.name}")
+    print(f"Latest pointers updated in: {output_dir}")
 
 
 def main():
@@ -2707,6 +3544,11 @@ def main():
     scan_path = Path(args.path).resolve()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if bool(args.safe_ai_only):
+        if args.resume_queue:
+            raise ValueError("--safe-ai-only cannot be combined with --resume-queue")
+        run_safe_ai_only(scan_path, output_dir, args, llm_provider, base_url)
+        return
     changed_lines_by_file = {}
     pre_scan_rule_stats = {}
     roslyn_meta = {
@@ -2866,8 +3708,30 @@ def main():
     llm_cache = load_llm_cache(cache_path) if args.use_llm_cache else {}
     if args.use_llm_cache:
         log_progress(f"Loaded LLM cache entries: {len(llm_cache)} from {cache_path}")
+    patch_template_cache_path = _resolve_patch_template_cache_path(args.patch_template_cache_file, output_dir)
+    patch_template_cache = load_patch_template_cache(patch_template_cache_path) if args.use_patch_template_cache else {}
+    if args.use_patch_template_cache:
+        log_progress(f"Loaded patch template cache entries: {len(patch_template_cache)} from {patch_template_cache_path}")
 
     pending_findings = [f for f in findings if status_by_key.get(f.get("finding_key")) != "reviewed"]
+    if args.safe_ai_dry_run:
+        risk_path = write_safe_ai_risk_report(pending_findings, output_dir, scan_meta, llm_provider, base_url)
+        risk_payload = json.loads(risk_path.read_text(encoding="utf-8", errors="ignore"))
+        risk_md_path = write_safe_ai_risk_markdown(risk_payload, output_dir, scan_meta)
+        risk_sarif_path = write_safe_ai_risk_sarif(risk_payload, output_dir, scan_meta)
+        risk_summary = (risk_payload.get("summary", {}) or {})
+        log_progress(
+            "Safe AI dry-run summary: "
+            f"total={risk_summary.get('total_findings', 0)}, "
+            f"high={risk_summary.get('high', 0)}, "
+            f"medium={risk_summary.get('medium', 0)}, "
+            f"low={risk_summary.get('low', 0)}, "
+            f"external_boundary={risk_payload.get('external_boundary', False)}"
+        )
+        log_progress(
+            f"Safe AI reports written: {risk_path.name}, {risk_md_path.name}, {risk_sarif_path.name}"
+        )
+        args.max_llm = 0
     quality_path = _resolve_quality_path(args.rule_quality_file, output_dir)
     quality_history = load_rule_quality(quality_path)
     noisy_rules = set()
@@ -2932,6 +3796,8 @@ def main():
             cached_review["llm_error_kind"] = ""
             cached_review["llm_attempts"] = 0
             cached_review["llm_retried"] = False
+            if args.use_patch_template_cache:
+                cached_review, _ = _apply_patch_template_if_available(cached_review, patch_template_cache)
             expanded = expand_cluster_review(cached_review, cluster_by_rep_key[rep["finding_key"]])
             for item in expanded:
                 reviewed_by_key[item["finding_key"]] = item
@@ -2970,6 +3836,8 @@ def main():
     write_queue_report(findings, status_by_key, reviewed, output_dir, scan_meta, roslyn_meta)
     if args.use_llm_cache:
         save_llm_cache(cache_path, llm_cache)
+    if args.use_patch_template_cache:
+        save_patch_template_cache(patch_template_cache_path, patch_template_cache)
 
     batch_size = int(args.max_llm)
     total_for_llm = len(reps_to_review)
@@ -3008,6 +3876,13 @@ def main():
                 retry_backoff_seconds=args.llm_retry_backoff_seconds,
                 connect_timeout_seconds=args.llm_connect_timeout_seconds,
                 read_timeout_seconds=args.llm_read_timeout_seconds,
+                prefer_patch_s1s2=bool(args.prefer_patch_s1s2),
+                prefer_patch_all_severities=bool(args.prefer_patch_all_severities),
+                patch_min_confidence=float(args.patch_min_confidence),
+                patch_repair_retries=int(args.patch_repair_retries),
+                safe_ai_policy_mode=str(args.safe_ai_policy_mode),
+                safe_ai_allow_external_high_risk=bool(args.safe_ai_allow_external_high_risk),
+                safe_ai_redact_medium=bool(args.safe_ai_redact_medium),
             )
             llm_batch_seconds = time.perf_counter() - llm_batch_started
             llm_stage_seconds += llm_batch_seconds
@@ -3019,6 +3894,13 @@ def main():
             )
 
             for rep_result in batch_reviewed:
+                if args.use_patch_template_cache:
+                    rep_result, template_applied = _apply_patch_template_if_available(rep_result, patch_template_cache)
+                    if template_applied:
+                        log_progress(
+                            f"Patch template cache applied for {rep_result.get('rule_id','unknown')} "
+                            f"at {rep_result.get('file','unknown')}:{rep_result.get('line',1)}."
+                        )
                 cluster = cluster_by_rep_key.get(rep_result["finding_key"])
                 if not cluster:
                     cluster = {
@@ -3037,11 +3919,22 @@ def main():
                         "llm_review": rep_result.get("llm_review", {}),
                         "updated_at": datetime.now().isoformat(timespec="seconds"),
                     }
+                if args.use_patch_template_cache:
+                    review_patch = str((rep_result.get("llm_review", {}) or {}).get("patch", "unknown") or "unknown")
+                    if review_patch.strip().lower() != "unknown":
+                        ptk = _patch_template_key(rep_result)
+                        patch_template_cache[ptk] = {
+                            "rule_id": rep_result.get("rule_id", "unknown"),
+                            "patch": review_patch,
+                            "updated_at": datetime.now().isoformat(timespec="seconds"),
+                        }
 
             reviewed = list(reviewed_by_key.values())
             write_queue_report(findings, status_by_key, reviewed, output_dir, scan_meta, roslyn_meta)
             if args.use_llm_cache:
                 save_llm_cache(cache_path, llm_cache)
+            if args.use_patch_template_cache:
+                save_patch_template_cache(patch_template_cache_path, patch_template_cache)
 
             summary_data = summarize(reviewed)
             json_path = write_json_report(summary_data, output_dir, roslyn_meta, scan_meta)

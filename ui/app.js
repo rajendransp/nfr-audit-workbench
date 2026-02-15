@@ -5,6 +5,7 @@ var state = {
   currentPage: 1,
   pageSize: 20,
   currentFile: "findings.json",
+  viewMode: "findings",
   sortCol: "severity",
   sortDir: "asc",
   loadToken: 0,
@@ -44,6 +45,8 @@ var detailsBodyEl = document.getElementById("detailsBody");
 var statusEl = document.getElementById("statusText");
 var filePickerEl = document.getElementById("filePicker");
 var uploadEl = document.getElementById("uploadInput");
+var tabFindingsEl = document.getElementById("tabFindings");
+var tabSafeAiEl = document.getElementById("tabSafeAi");
 var columnTogglesEl = document.getElementById("columnToggles");
 var snippetHeightEl = document.getElementById("snippetHeight");
 var snippetHeightValueEl = document.getElementById("snippetHeightValue");
@@ -125,6 +128,106 @@ function patchStatusOf(f) {
   return "unknown";
 }
 
+function isSafeAiPayload(json) {
+  if (!json || !Array.isArray(json.findings)) return false;
+  if (json.findings.length === 0) return Boolean(json.summary && json.summary.total_findings != null && json.provider);
+  return ("risk" in json.findings[0]) && !("llm_review" in json.findings[0]);
+}
+
+function severityFromRisk(risk) {
+  var r = String(risk || "").toLowerCase();
+  if (r === "high") return "S1";
+  if (r === "medium") return "S2";
+  return "S4";
+}
+
+function confidenceFromRisk(risk) {
+  var r = String(risk || "").toLowerCase();
+  if (r === "high") return 0.95;
+  if (r === "medium") return 0.75;
+  return 0.55;
+}
+
+function recommendationFromRisk(risk) {
+  var r = String(risk || "").toLowerCase();
+  if (r === "high") return "Do not send externally. Use local model or internal review.";
+  if (r === "medium") return "Redact sensitive details before external AI usage.";
+  return "Allowed for external AI under policy with normal review.";
+}
+
+function normalizeSafeAiPayload(json) {
+  var raw = Array.isArray(json.findings) ? json.findings : [];
+  var out = [];
+  for (var i = 0; i < raw.length; i++) {
+    var item = raw[i] || {};
+    var risk = String(item.risk || "low").toLowerCase();
+    out.push({
+      finding_key: item.finding_key || ("safe_ai_" + i),
+      source: item.source || "regex",
+      rule_id: item.rule_id || "SAFE-AI-RISK",
+      rule_title: "Safe AI risk classification",
+      top_level_category: item.top_level_category || "safe_ai",
+      sub_category: item.sub_category || "risk",
+      file: item.file || "unknown",
+      line: item.line || 1,
+      file_type: "unknown",
+      language: "unknown",
+      match_text: item.match_text || "",
+      snippet: item.match_text || "",
+      llm_review: {
+        isIssue: true,
+        severity: severityFromRisk(risk),
+        confidence: confidenceFromRisk(risk),
+        title: "Safe AI " + risk + " risk",
+        why: "Snippet classified as " + risk + " risk for external AI boundary.",
+        recommendation: recommendationFromRisk(risk),
+        effort: "low",
+        benefit: "high",
+        quick_win: risk !== "low",
+        patch: "unknown",
+        patch_quality: "unknown",
+        patch_attention: "unavailable",
+        patch_attention_reason: "risk_report_only"
+      },
+      ai_policy: {
+        mode: "dry_run",
+        risk: risk,
+        external_boundary: Boolean(json.external_boundary),
+        blocked: false,
+        redacted: false
+      }
+    });
+  }
+  return {
+    summary: {
+      total_reviewed: (json.summary && json.summary.total_findings) != null ? json.summary.total_findings : out.length,
+      confirmed_issues: out.length,
+      by_severity: {
+        S1: Number((json.summary || {}).high || 0),
+        S2: Number((json.summary || {}).medium || 0),
+        S3: 0,
+        S4: Number((json.summary || {}).low || 0)
+      },
+      by_source: {},
+      by_trust_tier: {},
+      safe_ai: {
+        provider: json.provider || "unknown",
+        external_boundary: Boolean(json.external_boundary),
+        high: Number((json.summary || {}).high || 0),
+        medium: Number((json.summary || {}).medium || 0),
+        low: Number((json.summary || {}).low || 0)
+      }
+    },
+    findings: out
+  };
+}
+
+function setViewMode(mode) {
+  state.viewMode = (mode === "safe_ai") ? "safe_ai" : "findings";
+  if (tabFindingsEl) tabFindingsEl.classList.toggle("active", state.viewMode === "findings");
+  if (tabSafeAiEl) tabSafeAiEl.classList.toggle("active", state.viewMode === "safe_ai");
+}
+
 function topLevelOf(f) {
   return String(f.top_level_category || "unknown").toLowerCase();
 }
@@ -164,6 +267,24 @@ function refreshCategoryFilters() {
 
 function renderCards(summary) {
   summary = summary || {};
+  if (state.viewMode === "safe_ai") {
+    var safe = summary.safe_ai || {};
+    var safeRows = [
+      ["Total", summary.total_reviewed != null ? summary.total_reviewed : state.all.length],
+      ["High", Number(safe.high || 0)],
+      ["Medium", Number(safe.medium || 0)],
+      ["Low", Number(safe.low || 0)],
+      ["Provider", String(safe.provider || "unknown")],
+      ["External", safe.external_boundary ? "Yes" : "No"],
+      ["Mode", "safe_ai"]
+    ];
+    var safeHtml = "";
+    for (var s = 0; s < safeRows.length; s++) {
+      safeHtml += '<article class="card"><div class="k">' + esc(safeRows[s][0]) + '</div><div class="v">' + esc(safeRows[s][1]) + '</div></article>';
+    }
+    cardsEl.innerHTML = safeHtml;
+    return;
+  }
   var rows = [
     ["Reviewed", summary.total_reviewed != null ? summary.total_reviewed : state.all.length],
     ["Confirmed", summary.confirmed_issues != null ? summary.confirmed_issues : state.all.length],
@@ -451,6 +572,14 @@ function showDetails(f) {
   content += detailBlock("Why", lr.why || "-", false);
   content += detailBlock("Recommendation", lr.recommendation || "-", false);
   content += detailBlock("Patch Status", patchStatusOf(f));
+  if (state.viewMode === "safe_ai") {
+    var risk = get(f, ["ai_policy", "risk"], "low");
+    content += detailBlock("Safe AI Risk", String(risk));
+    content += detailBlock("External Boundary", get(f, ["ai_policy", "external_boundary"], false) ? "Yes" : "No");
+    content += detailBlock("Policy Mode", get(f, ["ai_policy", "mode"], "dry_run"));
+  }
+  content += detailBlock("Patch Safety", String(lr.patch_attention || "unavailable"));
+  if (lr.patch_attention_reason) content += detailBlock("Patch Safety Reason", String(lr.patch_attention_reason));
   content += detailCodeBlock("Code Snippet", f.snippet || f.match_text || "", "code", f.language || "unknown", f.match_text || "");
   if (lr.patch && String(lr.patch).toLowerCase() !== "unknown") {
     content += detailCodeBlock("Suggested Patch", lr.patch, "diff", "diff", "");
@@ -516,6 +645,12 @@ function loadData(fileName, allowFallback) {
     .then(function (payload) {
       if (token !== state.loadToken) return;
       var json = payload.data || {};
+      if (isSafeAiPayload(json)) {
+        setViewMode("safe_ai");
+        json = normalizeSafeAiPayload(json);
+      } else if (state.viewMode !== "safe_ai") {
+        setViewMode("findings");
+      }
       var findings = json.findings || [];
       state.all = findings.filter(function (f) { return get(f, ["llm_review", "isIssue"], true) !== false; });
       state.currentFile = payload.name || requested;
@@ -547,6 +682,36 @@ function uploadFile(file) {
 document.getElementById("reloadBtn").addEventListener("click", function () {
   loadFileOptions().then(function () { return loadData(state.currentFile); }).catch(showError);
 });
+
+if (tabFindingsEl) {
+  tabFindingsEl.addEventListener("click", function () {
+    setViewMode("findings");
+    loadData(state.currentFile).catch(showError);
+  });
+}
+if (tabSafeAiEl) {
+  tabSafeAiEl.addEventListener("click", function () {
+    setViewMode("safe_ai");
+    var current = String(filePickerEl.value || state.currentFile || "");
+    if (current.indexOf("safe_ai_risk") !== -1) {
+      loadData(current).catch(showError);
+      return;
+    }
+    loadFileOptions()
+      .then(function () {
+        var opts = filePickerEl.options || [];
+        for (var i = 0; i < opts.length; i++) {
+          var name = String(opts[i].value || "");
+          if (name.indexOf("safe_ai_risk") !== -1) {
+            filePickerEl.value = name;
+            return loadData(name);
+          }
+        }
+        throw new Error("No safe_ai_risk file found. Run scan with --safe-ai-dry-run first.");
+      })
+      .catch(showError);
+  });
+}
 
 filePickerEl.addEventListener("change", function () { loadData(filePickerEl.value).catch(showError); });
 uploadEl.addEventListener("change", function () { uploadFile(uploadEl.files[0]).catch(showError); });

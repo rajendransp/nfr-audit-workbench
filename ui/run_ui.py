@@ -39,7 +39,7 @@ class SafeStaticHandler(SimpleHTTPRequestHandler):
         reports = self._reports_dir()
         reports.mkdir(parents=True, exist_ok=True)
         files = []
-        patterns = ["findings__*.json", "uploaded__*.json"]
+        patterns = ["findings__*.json", "safe_ai_risk__*.json", "uploaded__*.json"]
         candidates = []
         for pat in patterns:
             candidates.extend(list(reports.glob(pat)))
@@ -59,6 +59,16 @@ class SafeStaticHandler(SimpleHTTPRequestHandler):
                     "name": latest.name,
                     "size": latest.stat().st_size,
                     "modified_utc": datetime.utcfromtimestamp(latest.stat().st_mtime).isoformat() + "Z",
+                },
+            )
+        latest_safe = reports / "safe_ai_risk.json"
+        if latest_safe.exists():
+            files.insert(
+                0,
+                {
+                    "name": latest_safe.name,
+                    "size": latest_safe.stat().st_size,
+                    "modified_utc": datetime.utcfromtimestamp(latest_safe.stat().st_mtime).isoformat() + "Z",
                 },
             )
         return files

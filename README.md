@@ -102,6 +102,12 @@ Run all packs together:
 python nfr_scan.py --path C:developmentmy-repo --rules rules/all_rules.json
 ```
 
+Run standalone Safe-AI risk scan (separate ruleset):
+
+```powershell
+python nfr_scan.py --path C:developmentmy-repo --safe-ai-only --safe-ai-rules rules/safe_ai_rules.json --max-findings 10000
+```
+
 Compare rule deltas between two runs:
 
 ```powershell
@@ -137,18 +143,31 @@ LLM batching behavior:
 -   `--max-llm` is the LLM batch size (default `60`).
 -   `--regex-workers` controls regex rule parallelism (default `1`).
 -   `--llm-provider` selects provider (`ollama`, `openai`, `openrouter`, `xai`, `gemini`; default `ollama`).
+-   Safe AI policy controls for external providers:
+-   `--safe-ai-policy-mode off|warn|enforce` (default `warn`)
+-   `--safe-ai-allow-external-high-risk` (default off)
+-   `--safe-ai-redact-medium` (default on)
+-   `--safe-ai-dry-run` writes `safe_ai_risk__<project>__<timestamp>.json` and skips LLM review.
+-   `--safe-ai-only` runs Safe-AI scanning as an independent pipeline (no NFR queue, no LLM validation).
+-   `--safe-ai-rules` selects rule file(s) for standalone Safe-AI scanning (default `rules/safe_ai_rules.json`).
 -   `--llm-workers` controls parallel LLM requests per batch (default `1`).
 -   For local stability, start with `--llm-workers 2` and increase gradually if hardware has headroom.
 -   `--prioritize-llm-queue` (default on) sends higher-priority findings first (S1/S2 and higher-confidence hints).
 -   `--dedup-before-llm` (default on) clusters similar findings (same file/function/rule/match) and sends representative items to LLM.
 -   `--use-llm-cache` (default on) caches LLM decisions across runs in `--llm-cache-file` (default `llm_review_cache.json` under output dir).
 -   `--adaptive-llm-workers` (default on) reduces workers on timeout/fallback spikes and slowly increases after stable batches.
+-   `--prefer-patch-s1s2` (default on) retries once with a patch-focused prompt when S1/S2 findings return `patch=unknown`.
+-   `--prefer-patch-all-severities` (default on) enables patch-focused retry for non-S1/S2 findings when confidence is high enough.
+-   `--patch-min-confidence` (default `0.6`) gates non-S1/S2 patch retry and low-confidence patch generation.
+-   `--patch-repair-retries` (default `1`) retries with explicit no-op feedback when patch output is a no-op.
+-   `--use-patch-template-cache` (default on) and `--patch-template-cache-file` reuse successful patch templates across similar findings.
 -   `--fast-high-confidence-routing` enables fast mode: high-confidence regex findings are auto-confirmed without LLM.
 -   `--high-confidence-threshold` (default `0.9`) and `--high-confidence-max-severity` (default `S2`) control fast-route eligibility.
 -   `--auto-demote-noisy-rules` (default on) uses historical rule quality to demote noisy rules in queue ordering.
 -   Rule quality settings: `--rule-quality-file`, `--noisy-rule-min-reviewed`, `--noisy-rule-max-precision`, `--noisy-rule-max-fallback-rate`.
 -   Diff/PR mode: `--diff-base <git-ref>` limits scan to changed files/lines vs `--diff-head` (default `HEAD`); add `--diff-files-only` to scan all lines in changed files.
 -   CI policy modes: `--ci-mode off|warn|soft-fail|hard-fail` with thresholds by severity (`--ci-threshold-s1..s4`) and overall (`--ci-max-total`).
+-   Patch CI thresholds: `--ci-min-patch-generated` and `--ci-max-patch-no-op`.
 -   CI trust-tier scoping: `--ci-count-trust-tiers` (comma-separated from `llm_confirmed,fast_routed,fallback,regex_only,roslyn`).
 -   API rules support `enforcement_level` (`hard_fail` or `review`) for CI blocking behavior.
 -   Rules can optionally set `ignore_comment_lines: true` to suppress comment-only regex matches.
@@ -160,8 +179,10 @@ LLM batching behavior:
 -   FE/Razor packs exclude common vendor/minified paths by default to reduce non-actionable noise.
 -   LLM patch guard marks no-op diffs as `patch_quality=no_op` and downgrades patch output to `unknown`.
 -   S1/S2 findings now bias the LLM prompt toward returning a minimal safe patch where possible.
--   Reports include `summary.patch_metrics` (`generated`, `unknown`, `no_op_dropped`, `valid_quality`, `total_reviewed`).
+-   Reports include `summary.patch_metrics` (`generated`, `unknown`, `no_op_dropped`, `valid_quality`, `safe_generated`, `needs_attention_generated`, `template_cache_applied`, `total_reviewed`).
+-   Reports include `summary.ai_policy_metrics` (`external_boundary_findings`, `blocked_findings`, `redacted_findings`, `high_risk_findings`, `medium_risk_findings`).
 -   UI detail pane always shows patch status and displays a “Patch unavailable” message when patch content is `unknown`.
+-   UI detail pane shows patch safety tags (`safe` vs `needs_attention`) and reason.
 -   Incremental mode is on by default (`--incremental`): only new/changed findings are sent to LLM versus persisted baseline.
 -   Use `--no-incremental` for full scan mode.
 -   Baseline persistence defaults to `<output-dir>/<baseline-dir>/<project>.json` where `--baseline-dir` defaults to `baselines`.
@@ -198,6 +219,16 @@ Default parameter values (from `nfr_scan_config.json`):
 -   `llm_retry_backoff_seconds`: `1.5`
 -   `llm_connect_timeout_seconds`: `20.0`
 -   `llm_read_timeout_seconds`: `120.0`
+-   `safe_ai_policy_mode`: `warn`
+-   `safe_ai_allow_external_high_risk`: `false`
+-   `safe_ai_redact_medium`: `true`
+-   `safe_ai_dry_run`: `false`
+-   `safe_ai_only`: `false`
+-   `safe_ai_rules`: `rules/safe_ai_rules.json`
+-   `prefer_patch_s1s2`: `true`
+-   `prefer_patch_all_severities`: `true`
+-   `patch_min_confidence`: `0.6`
+-   `patch_repair_retries`: `1`
 -   `openai_api_key`: `""`
 -   `openai_model`: `""`
 -   `openai_base_url`: `""`
@@ -212,6 +243,8 @@ Default parameter values (from `nfr_scan_config.json`):
 -   `gemini_base_url`: `""`
 -   `llm_cache_file`: `llm_review_cache.json`
 -   `use_llm_cache`: `true`
+-   `patch_template_cache_file`: `patch_template_cache.json`
+-   `use_patch_template_cache`: `true`
 -   `dedup_before_llm`: `true`
 -   `prioritize_llm_queue`: `true`
 -   `adaptive_llm_workers`: `true`
@@ -223,7 +256,7 @@ Default parameter values (from `nfr_scan_config.json`):
 -   `noisy_rule_min_reviewed`: `20`
 -   `noisy_rule_max_precision`: `0.25`
 -   `noisy_rule_max_fallback_rate`: `0.2`
-  -   `resume_queue`: `""`
+-   `resume_queue`: `""`
 -   `temperature`: `0.1`
 -   `baseline`: `""`
 -   `only_new`: `false`
@@ -243,6 +276,8 @@ Default parameter values (from `nfr_scan_config.json`):
 -   `ci_threshold_s2`: `-1`
 -   `ci_threshold_s3`: `-1`
 -   `ci_threshold_s4`: `-1`
+-   `ci_min_patch_generated`: `-1`
+-   `ci_max_patch_no_op`: `-1`
 -   `ci_count_trust_tiers`: `llm_confirmed,fast_routed,fallback,regex_only,roslyn`
 
 CI note:
