@@ -1,320 +1,336 @@
-﻿[
-    {
-        "id":  "NFR-API-001",
-        "title":  "Controller action missing CancellationToken",
-        "category":  "reliability",
-        "top_level_category":  "rest_api",
-        "sub_category":  "concurrency",
-        "severity":  "S2",
-        "pattern":  "\\[(Http(Get|Post|Put|Delete|Patch)|Route)\\b[^\\]]*\\][\\s\\S]{0,120}\\b(public|internal|protected)\\s+(async\\s+)?Task(\u003c[^\u003e]+\u003e)?\\s+[A-Za-z0-9_]+\\s*\\((?![^\\)]*\\bCancellationToken\\b)[^\\)]*\\)",
-        "ignore_comment_lines":  true,
-        "include_globs":  [
-                              "*.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Request handlers should accept cancellation to stop work after disconnects/timeouts.",
-        "confidence_hint":  0.65
-    },
-    {
-        "id":  "NFR-API-002",
-        "title":  "Large request body limit configured",
-        "category":  "reliability",
-        "top_level_category":  "rest_api",
-        "sub_category":  "loading",
-        "severity":  "S2",
-        "pattern":  "\\b(MaxRequestBodySize|RequestSizeLimit)\\b[^\\n]*\\b([1-9][0-9]{7,})\\b",
-        "include_globs":  [
-                              "*.cs",
-                              "appsettings*.json",
-                              "*.json"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**"
-                          ],
-        "rationale":  "Very large body limits increase memory pressure and denial-of-service exposure.",
-        "confidence_hint":  0.9
-    },
-    {
-        "id":  "NFR-API-003",
-        "title":  "No pagination on collection response",
-        "category":  "scalability",
-        "top_level_category":  "rest_api",
-        "sub_category":  "loading",
-        "severity":  "S2",
-        "pattern":  "\\[HttpGet[^\\]]*\\][\\s\\S]{0,320}\\b(public|internal|protected)\\s+(async\\s+)?Task\\s*\u003c\\s*(IActionResult|ActionResult\u003c[^\u003e]+\u003e)\\s*\u003e\\s+[A-Za-z0-9_]*(Get|List|Search|Query)[A-Za-z0-9_]*\\s*\\([^\\)]*\\)[\\s\\S]{0,520}\\breturn\\s+Ok\\s*\\((?![^;]{0,220}\\b(skip|take|page|pageSize|limit|offset)\\b)[^;]*\\)",
-        "ignore_comment_lines":  true,
-        "include_globs":  [
-                              "*.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Unpaged collection endpoints can saturate CPU, memory, and downstream stores.",
-        "confidence_hint":  0.5
-    },
-    {
-        "id":  "NFR-API-004",
-        "title":  "Synchronous serialization/deserialization",
-        "category":  "performance",
-        "top_level_category":  "rest_api",
-        "sub_category":  "performance",
-        "severity":  "S3",
-        "pattern":  "\\b(JsonSerializer\\.Deserialize|JsonConvert\\.DeserializeObject|JsonSerializer\\.Serialize|JsonConvert\\.SerializeObject)\\s*\\(",
-        "include_globs":  [
-                              "*.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Heavy sync serialization in request pipeline can reduce throughput.",
-        "confidence_hint":  0.8
-    },
-    {
-        "id":  "NFR-API-005",
-        "title":  "Missing response caching hints on GET endpoint",
-        "category":  "performance",
-        "top_level_category":  "rest_api",
-        "sub_category":  "loading",
-        "severity":  "S3",
-        "pattern":  "\\[HttpGet[^\\]]*\\](?![\\s\\S]{0,220}\\[(ResponseCache|OutputCache)\\b)[\\s\\S]{0,260}\\b(public|internal|protected)\\s+(async\\s+)?Task",
-        "ignore_comment_lines":  true,
-        "include_globs":  [
-                              "*.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Missing cache hints can force avoidable load onto origin services.",
-        "confidence_hint":  0.55
-    },
-    {
-        "id":  "NFR-API-006",
-        "title":  "Endpoint returns full entity directly",
-        "category":  "scalability",
-        "top_level_category":  "rest_api",
-        "sub_category":  "loading",
-        "severity":  "S3",
-        "pattern":  "\\breturn\\s+Ok\\s*\\(\\s*(await\\s+)?(_db\\w*|dbContext|context)\\.[^;]{0,180}\\)\\s*;",
-        "ignore_comment_lines":  true,
-        "include_globs":  [
-                              "*.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Returning full entities often leaks unnecessary fields and bloats payload size.",
-        "confidence_hint":  0.45
-    },
-    {
-        "id":  "NFR-API-007",
-        "title":  "No request timeout policy in HttpClient registration",
-        "category":  "reliability",
-        "top_level_category":  "rest_api",
-        "sub_category":  "loading",
-        "severity":  "S2",
-        "pattern":  "\\bAddHttpClient\\b[\\s\\S]{0,260}(?!\\b(Timeout|SetHandlerLifetime|ConfigureHttpClient|AddPolicyHandler)\\b)",
-        "ignore_comment_lines":  true,
-        "include_globs":  [
-                              "*.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Upstream hangs without timeout policies can exhaust worker resources.",
-        "confidence_hint":  0.5
-    },
-    {
-        "id":  "NFR-API-008",
-        "title":  "Retry policy without jitter/backoff",
-        "category":  "reliability",
-        "top_level_category":  "rest_api",
-        "sub_category":  "loading",
-        "severity":  "S2",
-        "pattern":  "\\b(Retry|RetryAsync)\\s*\\(\\s*\\d+\\s*\\)|\\bWaitAndRetry(Async)?\\s*\\(\\s*\\d+\\s*,\\s*[^\\)]*TimeSpan\\.From(Seconds|Milliseconds)\\s*\\(\\s*\\d+\\s*\\)",
-        "ignore_comment_lines":  true,
-        "include_globs":  [
-                              "*.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Aggressive retries without jitter can amplify incidents during partial outages.",
-        "confidence_hint":  0.55
-    },
-    {
-        "id":  "NFR-API-009",
-        "title":  "No [ApiController] on controller class",
-        "category":  "reliability",
-        "top_level_category":  "rest_api",
-        "sub_category":  "performance",
-        "severity":  "S3",
-        "pattern":  "\\[Route\\s*\\(\"api/[^\\\"]+\"\\)\\][\\s\\S]{0,120}(public\\s+class\\s+[A-Za-z0-9_]+Controller\\b)(?![\\s\\S]{0,120}\\[ApiController\\])",
-        "include_globs":  [
-                              "*.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Skipping API controller conventions can weaken automatic validation and predictable behavior.",
-        "confidence_hint":  0.8
-    },
-    {
-        "id":  "NFR-API-010",
-        "title":  "Bulk endpoint without max batch constraint",
-        "category":  "scalability",
-        "top_level_category":  "rest_api",
-        "sub_category":  "loading",
-        "severity":  "S2",
-        "pattern":  "\\b(Bulk|Batch)\\b[\\s\\S]{0,260}(IEnumerable\u003c|List\u003c)(?![\\s\\S]{0,260}\\b(Max|Limit|Take|Chunk)\\b)",
-        "include_globs":  [
-                              "*.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Unbounded batch processing causes bursty CPU and memory consumption.",
-        "confidence_hint":  0.65
-    },
-    {
-        "id":  "NFR-API-011",
-        "title":  "No rate limiting middleware configured",
-        "category":  "scalability",
-        "top_level_category":  "rest_api",
-        "sub_category":  "loading",
-        "severity":  "S2",
-        "pattern":  "\\b(MapControllers|UseEndpoints)\\b(?![\\s\\S]{0,320}\\bUseRateLimiter\\b)",
-        "ignore_comment_lines":  true,
-        "include_globs":  [
-                              "Program.cs",
-                              "Startup.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Lack of admission control can let traffic spikes overwhelm service capacity.",
-        "confidence_hint":  0.6
-    },
-    {
-        "id":  "NFR-API-012",
-        "title":  "Endpoint reads request body synchronously",
-        "category":  "performance",
-        "top_level_category":  "rest_api",
-        "sub_category":  "concurrency",
-        "severity":  "S2",
-        "pattern":  "\\b(Request\\.Body|StreamReader\\s*\\([^\\)]*Request\\.Body[^\\)]*\\))[\\s\\S]{0,220}\\b(ReadToEnd\\s*\\(|Read\\s*\\((?!Async))",
-        "ignore_comment_lines":  true,
-        "include_globs":  [
-                              "*.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Synchronous body reads block worker threads and reduce concurrent request capacity.",
-        "confidence_hint":  0.85
-    },
-    {
-        "id":  "NFR-API-013",
-        "title":  "POST retry-sensitive endpoint missing idempotency key handling",
-        "category":  "reliability",
-        "top_level_category":  "rest_api",
-        "sub_category":  "concurrency",
-        "severity":  "S2",
-        "confidence_hint":  0.55,
-        "pattern":  "\\[HttpPost[^\\]]*\\][\\s\\S]{0,320}\\b(public|internal|protected)\\s+(async\\s+)?Task[^\\(]*\\([^\\)]*\\)[\\s\\S]{0,420}\\b(Create|Charge|Payment|Order|Checkout|Retry)\\b(?![\\s\\S]{0,220}(Idempotency-Key|IdempotencyKey))",
-        "ignore_comment_lines":  true,
-        "include_globs":  [
-                              "*.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Retry-sensitive POST flows should enforce idempotency keys to avoid duplicate processing."
-    },
-    {
-        "id":  "NFR-API-014",
-        "title":  "File upload endpoint missing request size guard",
-        "category":  "reliability",
-        "top_level_category":  "rest_api",
-        "sub_category":  "loading",
-        "severity":  "S2",
-        "confidence_hint":  0.7,
-        "pattern":  "\\[HttpPost[^\\]]*\\][\\s\\S]{0,300}\\b(IFormFile|IEnumerable\u003cIFormFile\u003e|List\u003cIFormFile\u003e)\\b(?![\\s\\S]{0,220}\\[(RequestSizeLimit|DisableRequestSizeLimit|RequestFormLimits)\\b)",
-        "ignore_comment_lines":  true,
-        "include_globs":  [
-                              "*.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Upload endpoints should explicitly define request size limits to prevent abuse and memory pressure."
-    },
-    {
-        "id":  "NFR-API-015",
-        "title":  "Critical endpoint marked AllowAnonymous",
-        "category":  "reliability",
-        "top_level_category":  "rest_api",
-        "sub_category":  "loading",
-        "severity":  "S1",
-        "confidence_hint":  0.8,
-        "pattern":  "\\[AllowAnonymous\\][\\s\\S]{0,180}\\[(Http(Post|Put|Delete|Patch)|Route)\\b[^\\]]*(admin|payment|billing|account|token|role|user)",
-        "ignore_comment_lines":  true,
-        "include_globs":  [
-                              "*.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Critical mutation/auth endpoints should not be anonymous unless explicitly justified and reviewed."
-    },
-    {
-        "id":  "NFR-API-016",
-        "title":  "Controller CancellationToken not propagated to async service call",
-        "category":  "reliability",
-        "top_level_category":  "rest_api",
-        "sub_category":  "concurrency",
-        "severity":  "S2",
-        "confidence_hint":  0.6,
-        "pattern":  "\\bTask\\s*\u003c[^\u003e]+\u003e\\s+[A-Za-z0-9_]+\\s*\\([^\\)]*\\bCancellationToken\\s+[A-Za-z0-9_]+[^\\)]*\\)[\\s\\S]{0,420}\\.[A-Za-z0-9_]*Async\\s*\\((?![^\\)]*\\bCancellationToken\\b)(?![^\\)]*\\bct\\b)(?![^\\)]*\\bstoppingToken\\b)[^\\)]*\\)",
-        "ignore_comment_lines":  true,
-        "include_globs":  [
-                              "*.cs"
-                          ],
-        "exclude_globs":  [
-                              "**/bin/**",
-                              "**/obj/**",
-                              "**/*Tests*.cs"
-                          ],
-        "rationale":  "Controller actions accepting CancellationToken should pass it to downstream async service/repository calls."
-    }
+[
+  {
+    "id": "NFR-API-001",
+    "title": "Controller action missing CancellationToken",
+    "category": "reliability",
+    "top_level_category": "rest_api",
+    "sub_category": "concurrency",
+    "severity": "S2",
+    "pattern": "\\[(Http(Get|Post|Put|Delete|Patch)|Route)\\b[^\\]]*\\][\\s\\S]{0,120}\\b(public|internal|protected)\\s+(async\\s+)?Task(<[^>]+>)?\\s+[A-Za-z0-9_]+\\s*\\((?![^\\)]*\\bCancellationToken\\b)[^\\)]*\\)",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Request handlers should accept cancellation to stop work after disconnects/timeouts.",
+    "confidence_hint": 0.65,
+    "enforcement_level": "hard_fail"
+  },
+  {
+    "id": "NFR-API-002",
+    "title": "Large request body limit configured",
+    "category": "reliability",
+    "top_level_category": "rest_api",
+    "sub_category": "loading",
+    "severity": "S2",
+    "pattern": "\\b(MaxRequestBodySize|RequestSizeLimit)\\b[^\\n]*\\b([1-9][0-9]{7,})\\b",
+    "include_globs": [
+      "*.cs",
+      "appsettings*.json",
+      "*.json"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**"
+    ],
+    "rationale": "Very large body limits increase memory pressure and denial-of-service exposure.",
+    "confidence_hint": 0.9,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-API-003",
+    "title": "No pagination on collection response",
+    "category": "scalability",
+    "top_level_category": "rest_api",
+    "sub_category": "loading",
+    "severity": "S2",
+    "pattern": "\\[HttpGet[^\\]]*\\][\\s\\S]{0,320}\\b(public|internal|protected)\\s+(async\\s+)?Task\\s*<\\s*(IActionResult|ActionResult<[^>]+>)\\s*>\\s+[A-Za-z0-9_]*(Get|List|Search|Query)[A-Za-z0-9_]*\\s*\\([^\\)]*\\)[\\s\\S]{0,520}\\breturn\\s+Ok\\s*\\((?![^;]{0,220}\\b(skip|take|page|pageSize|limit|offset)\\b)[^;]*\\)",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Unpaged collection endpoints can saturate CPU, memory, and downstream stores.",
+    "confidence_hint": 0.5,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-API-004",
+    "title": "Synchronous serialization/deserialization",
+    "category": "performance",
+    "top_level_category": "rest_api",
+    "sub_category": "performance",
+    "severity": "S3",
+    "pattern": "\\b(JsonSerializer\\.Deserialize|JsonConvert\\.DeserializeObject|JsonSerializer\\.Serialize|JsonConvert\\.SerializeObject)\\s*\\(",
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Heavy sync serialization in request pipeline can reduce throughput.",
+    "confidence_hint": 0.8,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-API-005",
+    "title": "Missing response caching hints on GET endpoint",
+    "category": "performance",
+    "top_level_category": "rest_api",
+    "sub_category": "loading",
+    "severity": "S3",
+    "pattern": "(NFR_CACHE_REQUIRED|PublicCacheable)[\\s\\S]{0,260}\\[HttpGet[^\\]]*\\](?![\\s\\S]{0,220}\\[(ResponseCache|OutputCache)\\b)(?![\\s\\S]{0,220}\\[Authorize\\b)(?![\\s\\S]{0,260}\\b(user|tenant|profile|secret|settings)\\b)[\\s\\S]{0,260}\\b(public|internal|protected)\\s+(async\\s+)?Task",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Apply cache-hint checks only to explicitly marked public-cache endpoints; skip authorized and user/tenant-specific handlers.",
+    "confidence_hint": 0.65,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-API-006",
+    "title": "Endpoint returns full entity directly",
+    "category": "scalability",
+    "top_level_category": "rest_api",
+    "sub_category": "loading",
+    "severity": "S3",
+    "pattern": "\\breturn\\s+Ok\\s*\\(\\s*(await\\s+)?(_db\\w*|dbContext|context)\\.[^;]{0,180}\\)\\s*;",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Returning full entities often leaks unnecessary fields and bloats payload size.",
+    "confidence_hint": 0.45,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-API-007",
+    "title": "No request timeout policy in HttpClient registration",
+    "category": "reliability",
+    "top_level_category": "rest_api",
+    "sub_category": "loading",
+    "severity": "S2",
+    "pattern": "\\bAddHttpClient\\b[\\s\\S]{0,260}(?!\\b(Timeout|SetHandlerLifetime|ConfigureHttpClient|AddPolicyHandler)\\b)",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Upstream hangs without timeout policies can exhaust worker resources.",
+    "confidence_hint": 0.5,
+    "enforcement_level": "hard_fail"
+  },
+  {
+    "id": "NFR-API-008",
+    "title": "Retry policy without jitter/backoff",
+    "category": "reliability",
+    "top_level_category": "rest_api",
+    "sub_category": "loading",
+    "severity": "S2",
+    "pattern": "\\b(Retry|RetryAsync)\\s*\\(\\s*\\d+\\s*\\)|\\bWaitAndRetry(Async)?\\s*\\(\\s*\\d+\\s*,\\s*[^\\)]*TimeSpan\\.From(Seconds|Milliseconds)\\s*\\(\\s*\\d+\\s*\\)",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Aggressive retries without jitter can amplify incidents during partial outages.",
+    "confidence_hint": 0.55,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-API-009",
+    "title": "No [ApiController] on controller class",
+    "category": "reliability",
+    "top_level_category": "rest_api",
+    "sub_category": "performance",
+    "severity": "S3",
+    "pattern": "\\[Route\\s*\\(\"api/[^\\\"]+\"\\)\\][\\s\\S]{0,120}(public\\s+class\\s+[A-Za-z0-9_]+Controller\\b)(?![\\s\\S]{0,120}\\[ApiController\\])",
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Skipping API controller conventions can weaken automatic validation and predictable behavior.",
+    "confidence_hint": 0.8,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-API-010",
+    "title": "Bulk endpoint without max batch constraint",
+    "category": "scalability",
+    "top_level_category": "rest_api",
+    "sub_category": "loading",
+    "severity": "S2",
+    "pattern": "\\b(Bulk|Batch)\\b[\\s\\S]{0,260}(IEnumerable<|List<)(?![\\s\\S]{0,260}\\b(Max|Limit|Take|Chunk)\\b)",
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Unbounded batch processing causes bursty CPU and memory consumption.",
+    "confidence_hint": 0.65,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-API-011",
+    "title": "No rate limiting middleware configured",
+    "category": "scalability",
+    "top_level_category": "rest_api",
+    "sub_category": "loading",
+    "severity": "S2",
+    "pattern": "\\b(MapControllers|UseEndpoints)\\b(?![\\s\\S]{0,320}\\bUseRateLimiter\\b)",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "Program.cs",
+      "Startup.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Lack of admission control can let traffic spikes overwhelm service capacity.",
+    "confidence_hint": 0.6,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-API-012",
+    "title": "Endpoint reads request body synchronously",
+    "category": "performance",
+    "top_level_category": "rest_api",
+    "sub_category": "concurrency",
+    "severity": "S2",
+    "pattern": "\\b(Request\\.Body|StreamReader\\s*\\([^\\)]*Request\\.Body[^\\)]*\\))[\\s\\S]{0,220}\\b(ReadToEnd\\s*\\(|Read\\s*\\((?!Async))",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Synchronous body reads block worker threads and reduce concurrent request capacity.",
+    "confidence_hint": 0.85,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-API-013",
+    "title": "POST retry-sensitive endpoint missing idempotency key handling",
+    "category": "reliability",
+    "top_level_category": "rest_api",
+    "sub_category": "concurrency",
+    "severity": "S2",
+    "confidence_hint": 0.55,
+    "pattern": "\\[HttpPost[^\\]]*\\][\\s\\S]{0,320}\\b(public|internal|protected)\\s+(async\\s+)?Task[^\\(]*\\([^\\)]*\\)[\\s\\S]{0,420}\\b(Create|Charge|Payment|Order|Checkout|Retry)\\b(?![\\s\\S]{0,220}(Idempotency-Key|IdempotencyKey))",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Retry-sensitive POST flows should enforce idempotency keys to avoid duplicate processing.",
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-API-014",
+    "title": "File upload endpoint missing request size guard",
+    "category": "reliability",
+    "top_level_category": "rest_api",
+    "sub_category": "loading",
+    "severity": "S2",
+    "confidence_hint": 0.7,
+    "pattern": "\\[HttpPost[^\\]]*\\][\\s\\S]{0,300}\\b(IFormFile|IEnumerable<IFormFile>|List<IFormFile>)\\b(?![\\s\\S]{0,220}\\[(RequestSizeLimit|DisableRequestSizeLimit|RequestFormLimits)\\b)",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Upload endpoints should explicitly define request size limits to prevent abuse and memory pressure.",
+    "enforcement_level": "hard_fail"
+  },
+  {
+    "id": "NFR-API-015",
+    "title": "Critical endpoint marked AllowAnonymous",
+    "category": "reliability",
+    "top_level_category": "rest_api",
+    "sub_category": "loading",
+    "severity": "S1",
+    "confidence_hint": 0.8,
+    "pattern": "\\[AllowAnonymous\\][\\s\\S]{0,180}\\[(Http(Post|Put|Delete|Patch)|Route)\\b[^\\]]*(admin|payment|billing|account|token|role|user)",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Critical mutation/auth endpoints should not be anonymous unless explicitly justified and reviewed.",
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-API-016",
+    "title": "Controller CancellationToken not propagated to async service call",
+    "category": "reliability",
+    "top_level_category": "rest_api",
+    "sub_category": "concurrency",
+    "severity": "S2",
+    "confidence_hint": 0.6,
+    "pattern": "\\bTask\\s*<[^>]+>\\s+[A-Za-z0-9_]+\\s*\\([^\\)]*\\bCancellationToken\\s+[A-Za-z0-9_]+[^\\)]*\\)[\\s\\S]{0,420}\\.[A-Za-z0-9_]*Async\\s*\\((?![^\\)]*\\bCancellationToken\\b)(?![^\\)]*\\bct\\b)(?![^\\)]*\\bstoppingToken\\b)[^\\)]*\\)",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Controller actions accepting CancellationToken should pass it to downstream async service/repository calls.",
+    "enforcement_level": "hard_fail"
+  }
 ]

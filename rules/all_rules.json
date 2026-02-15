@@ -903,7 +903,8 @@
                               "**/*Tests*.cs"
                           ],
         "rationale":  "Request handlers should accept cancellation to stop work after disconnects/timeouts.",
-        "confidence_hint":  0.65
+        "confidence_hint":  0.65,
+        "enforcement_level":  "hard_fail"
     },
     {
         "id":  "NFR-API-002",
@@ -923,7 +924,8 @@
                               "**/obj/**"
                           ],
         "rationale":  "Very large body limits increase memory pressure and denial-of-service exposure.",
-        "confidence_hint":  0.9
+        "confidence_hint":  0.9,
+        "enforcement_level":  "review"
     },
     {
         "id":  "NFR-API-003",
@@ -943,7 +945,8 @@
                               "**/*Tests*.cs"
                           ],
         "rationale":  "Unpaged collection endpoints can saturate CPU, memory, and downstream stores.",
-        "confidence_hint":  0.5
+        "confidence_hint":  0.5,
+        "enforcement_level":  "review"
     },
     {
         "id":  "NFR-API-004",
@@ -962,7 +965,8 @@
                               "**/*Tests*.cs"
                           ],
         "rationale":  "Heavy sync serialization in request pipeline can reduce throughput.",
-        "confidence_hint":  0.8
+        "confidence_hint":  0.8,
+        "enforcement_level":  "review"
     },
     {
         "id":  "NFR-API-005",
@@ -971,7 +975,7 @@
         "top_level_category":  "rest_api",
         "sub_category":  "loading",
         "severity":  "S3",
-        "pattern":  "\\[HttpGet[^\\]]*\\](?![\\s\\S]{0,220}\\[(ResponseCache|OutputCache)\\b)[\\s\\S]{0,260}\\b(public|internal|protected)\\s+(async\\s+)?Task",
+        "pattern":  "(NFR_CACHE_REQUIRED|PublicCacheable)[\\s\\S]{0,260}\\[HttpGet[^\\]]*\\](?![\\s\\S]{0,220}\\[(ResponseCache|OutputCache)\\b)(?![\\s\\S]{0,220}\\[Authorize\\b)(?![\\s\\S]{0,260}\\b(user|tenant|profile|secret|settings)\\b)[\\s\\S]{0,260}\\b(public|internal|protected)\\s+(async\\s+)?Task",
         "ignore_comment_lines":  true,
         "include_globs":  [
                               "*.cs"
@@ -981,8 +985,9 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Missing cache hints can force avoidable load onto origin services.",
-        "confidence_hint":  0.55
+        "rationale":  "Apply cache-hint checks only to explicitly marked public-cache endpoints; skip authorized and user/tenant-specific handlers.",
+        "confidence_hint":  0.65,
+        "enforcement_level":  "review"
     },
     {
         "id":  "NFR-API-006",
@@ -1002,7 +1007,8 @@
                               "**/*Tests*.cs"
                           ],
         "rationale":  "Returning full entities often leaks unnecessary fields and bloats payload size.",
-        "confidence_hint":  0.45
+        "confidence_hint":  0.45,
+        "enforcement_level":  "review"
     },
     {
         "id":  "NFR-API-007",
@@ -1022,7 +1028,8 @@
                               "**/*Tests*.cs"
                           ],
         "rationale":  "Upstream hangs without timeout policies can exhaust worker resources.",
-        "confidence_hint":  0.5
+        "confidence_hint":  0.5,
+        "enforcement_level":  "hard_fail"
     },
     {
         "id":  "NFR-API-008",
@@ -1042,7 +1049,8 @@
                               "**/*Tests*.cs"
                           ],
         "rationale":  "Aggressive retries without jitter can amplify incidents during partial outages.",
-        "confidence_hint":  0.55
+        "confidence_hint":  0.55,
+        "enforcement_level":  "review"
     },
     {
         "id":  "NFR-API-009",
@@ -1061,7 +1069,8 @@
                               "**/*Tests*.cs"
                           ],
         "rationale":  "Skipping API controller conventions can weaken automatic validation and predictable behavior.",
-        "confidence_hint":  0.8
+        "confidence_hint":  0.8,
+        "enforcement_level":  "review"
     },
     {
         "id":  "NFR-API-010",
@@ -1080,7 +1089,8 @@
                               "**/*Tests*.cs"
                           ],
         "rationale":  "Unbounded batch processing causes bursty CPU and memory consumption.",
-        "confidence_hint":  0.65
+        "confidence_hint":  0.65,
+        "enforcement_level":  "review"
     },
     {
         "id":  "NFR-API-011",
@@ -1101,7 +1111,8 @@
                               "**/*Tests*.cs"
                           ],
         "rationale":  "Lack of admission control can let traffic spikes overwhelm service capacity.",
-        "confidence_hint":  0.6
+        "confidence_hint":  0.6,
+        "enforcement_level":  "review"
     },
     {
         "id":  "NFR-API-012",
@@ -1121,7 +1132,8 @@
                               "**/*Tests*.cs"
                           ],
         "rationale":  "Synchronous body reads block worker threads and reduce concurrent request capacity.",
-        "confidence_hint":  0.85
+        "confidence_hint":  0.85,
+        "enforcement_level":  "review"
     },
     {
         "id":  "NFR-API-013",
@@ -1141,7 +1153,8 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Retry-sensitive POST flows should enforce idempotency keys to avoid duplicate processing."
+        "rationale":  "Retry-sensitive POST flows should enforce idempotency keys to avoid duplicate processing.",
+        "enforcement_level":  "review"
     },
     {
         "id":  "NFR-API-014",
@@ -1161,7 +1174,8 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Upload endpoints should explicitly define request size limits to prevent abuse and memory pressure."
+        "rationale":  "Upload endpoints should explicitly define request size limits to prevent abuse and memory pressure.",
+        "enforcement_level":  "hard_fail"
     },
     {
         "id":  "NFR-API-015",
@@ -1181,7 +1195,8 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Critical mutation/auth endpoints should not be anonymous unless explicitly justified and reviewed."
+        "rationale":  "Critical mutation/auth endpoints should not be anonymous unless explicitly justified and reviewed.",
+        "enforcement_level":  "review"
     },
     {
         "id":  "NFR-API-016",
@@ -1201,7 +1216,8 @@
                               "**/obj/**",
                               "**/*Tests*.cs"
                           ],
-        "rationale":  "Controller actions accepting CancellationToken should pass it to downstream async service/repository calls."
+        "rationale":  "Controller actions accepting CancellationToken should pass it to downstream async service/repository calls.",
+        "enforcement_level":  "hard_fail"
     },
     {
         "id":  "NFR-RAZOR-001",

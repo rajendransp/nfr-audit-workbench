@@ -59,6 +59,9 @@ Return JSON with exactly these keys:
 Rule:
 {rule_json}
 
+Rule-Specific Guidance:
+{rule_guidance}
+
 File: {file_path}
 Line: {line}
 Snippet:
@@ -116,7 +119,7 @@ def parse_args():
     parser.add_argument(
         "--max-llm",
         type=int,
-        default=120,
+        default=60,
         help="LLM batch size. Use 0 to skip Ollama review.",
     )
     parser.add_argument(
@@ -1233,6 +1236,7 @@ def pre_scan(
                     "top_level_category": rule.get("top_level_category", "dotnet"),
                     "sub_category": rule.get("sub_category", "performance"),
                     "default_severity": rule.get("severity", "S3"),
+                    "enforcement_level": str(rule.get("enforcement_level", "hard_fail")).lower(),
                     "rationale": rule.get("rationale", ""),
                     "file": m["file"],
                     "line": m["line"],
@@ -1429,7 +1433,48 @@ def _extract_json(text):
     last = text.rfind("}")
     if first != -1 and last != -1 and last > first:
         candidate = text[first : last + 1]
-        return json.loads(candidate)
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
+    # Fallback: scan for balanced JSON object candidates inside explanatory text.
+    candidates = []
+    start = None
+    depth = 0
+    in_string = False
+    escaped = False
+    for i, ch in enumerate(text):
+        if start is None:
+            if ch == "{":
+                start = i
+                depth = 1
+                in_string = False
+                escaped = False
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == "\"":
+                in_string = False
+            continue
+        if ch == "\"":
+            in_string = True
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidates.append(text[start : i + 1])
+                start = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except Exception:
+            continue
     raise ValueError("Could not parse JSON from LLM response")
 
 
@@ -1454,6 +1499,8 @@ def _patch_quality(patch_text):
 
 
 def _classify_ollama_error(exc):
+    if isinstance(exc, ValueError) and "JSON" in str(exc):
+        return False, "parse_error"
     if isinstance(exc, requests.exceptions.Timeout):
         return True, "timeout"
     if isinstance(exc, requests.exceptions.ConnectionError):
@@ -1523,6 +1570,13 @@ def _review_single_finding(
     read_timeout_seconds,
 ):
     started = time.perf_counter()
+    rule_guidance = "N/A"
+    if str(finding.get("rule_id", "")) == "NFR-API-004":
+        rule_guidance = (
+            "Do NOT suggest JsonConvert.SerializeObjectAsync (invalid API). "
+            "Prefer System.Text.Json stream-based async APIs (SerializeAsync/DeserializeAsync), "
+            "avoid serialize-deserialize round trips in hot paths, and move heavy serialization off request hot path."
+        )
     rule_payload = {
         "id": finding["rule_id"],
         "title": finding["rule_title"],
@@ -1535,6 +1589,7 @@ def _review_single_finding(
     }
     prompt = USER_TEMPLATE.format(
         rule_json=json.dumps(rule_payload, ensure_ascii=True),
+        rule_guidance=rule_guidance,
         file_path=finding["file"],
         line=finding["line"],
         snippet=_slim_snippet_for_prompt(finding),
@@ -2375,6 +2430,9 @@ def evaluate_ci_policy(summary_data, args):
 
     confirmed = summary_data.get("confirmed", [])
     scoped = [x for x in confirmed if str(x.get("trust_tier", "unknown")).lower() in allowed_tiers]
+    if mode == "hard-fail":
+        # In hard-fail mode, treat review-level findings as non-blocking by default.
+        scoped = [x for x in scoped if str(x.get("enforcement_level", "hard_fail")).lower() == "hard_fail"]
     fallback_items = [x for x in confirmed if str(x.get("trust_tier", "unknown")).lower() == "fallback"]
     by_sev = Counter(str((x.get("llm_review", {}) or {}).get("severity", x.get("default_severity", "S3"))).upper() for x in scoped)
 

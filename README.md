@@ -117,7 +117,7 @@ Config-driven defaults:
 Run all findings through Ollama in batches without prompts:
 
 ```powershell
-python nfr_scan.py --path C:developmentmy-repo --rules rules/all_rules.json --max-llm 120 --auto-continue-batches
+python nfr_scan.py --path C:developmentmy-repo --rules rules/all_rules.json --max-llm 60 --auto-continue-batches
 ```
 
 Ignore folders/files during scan (gitignore-like simple globs):
@@ -134,7 +134,7 @@ Notes:
 
 LLM batching behavior:
 
--   `--max-llm` is the LLM batch size (default `120`).
+-   `--max-llm` is the LLM batch size (default `60`).
 -   `--regex-workers` controls regex rule parallelism (default `1`).
 -   `--llm-workers` controls parallel Ollama requests per batch (default `1`).
 -   For local stability, start with `--llm-workers 2` and increase gradually if hardware has headroom.
@@ -149,7 +149,9 @@ LLM batching behavior:
 -   Diff/PR mode: `--diff-base <git-ref>` limits scan to changed files/lines vs `--diff-head` (default `HEAD`); add `--diff-files-only` to scan all lines in changed files.
 -   CI policy modes: `--ci-mode off|warn|soft-fail|hard-fail` with thresholds by severity (`--ci-threshold-s1..s4`) and overall (`--ci-max-total`).
 -   CI trust-tier scoping: `--ci-count-trust-tiers` (comma-separated from `llm_confirmed,fast_routed,fallback,regex_only,roslyn`).
+-   API rules support `enforcement_level` (`hard_fail` or `review`) for CI blocking behavior.
 -   Rules can optionally set `ignore_comment_lines: true` to suppress comment-only regex matches.
+-   `NFR-API-005` caching check is opt-in via `NFR_CACHE_REQUIRED`/`PublicCacheable` markers and skips authorized or user/tenant-specific endpoints.
 -   `NFR-DOTNET-003` is tuned to target task-like blocking `.Result` patterns and avoid common `OperationResult<T>.Result` false positives.
 -   Frontend XSS rule is split into:
   `NFR-FE-005A` (high-risk dynamic source to raw HTML, S1) and
@@ -159,7 +161,7 @@ LLM batching behavior:
 -   Incremental mode is on by default (`--incremental`): only new/changed findings are sent to LLM versus persisted baseline.
 -   Use `--no-incremental` for full scan mode.
 -   Baseline persistence defaults to `<output-dir>/<baseline-dir>/<project>.json` where `--baseline-dir` defaults to `baselines`.
--   Timeout/retry controls: `--llm-connect-timeout-seconds` (default `20`), `--llm-read-timeout-seconds` (default `120`), `--llm-retries` (default `2`), `--llm-retry-backoff-seconds` (default `1.5`).
+-   Timeout/retry controls: `--llm-connect-timeout-seconds` (default `20`), `--llm-read-timeout-seconds` (default `180`), `--llm-retries` (default `2`), `--llm-retry-backoff-seconds` (default `1.5`).
 -   Retries are used for retriable failures (timeout, connection errors, HTTP `429`, HTTP `5xx`). Non-retriable failures are logged and fallback review is used.
 -   After each batch, interactive runs ask whether to continue with the next batch.
 -   Use `--auto-continue-batches` for unattended runs (process all batches automatically).
@@ -179,7 +181,7 @@ Default parameter values (from `nfr_scan_config.json`):
 -   `context_lines`: `20`
 -   `max_findings`: `300`
 -   `regex_workers`: `1`
--   `max_llm`: `120`
+-   `max_llm`: `60`
 -   `auto_continue_batches`: `false`
 -   `llm_workers`: `1`
 -   `llm_retries`: `2`

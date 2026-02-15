@@ -7,6 +7,7 @@ var state = {
   currentFile: "findings.json",
   sortCol: "severity",
   sortDir: "asc",
+  loadToken: 0,
   columns: {
     severity: true,
     source: true,
@@ -59,6 +60,7 @@ var lastPageBtnEl = document.getElementById("lastPageBtn");
 state.pageSize = Number(pageSizeEl && pageSizeEl.value ? pageSizeEl.value : 20) || 20;
 
 var COLUMN_ORDER = ["severity","source","trustTier","quickWin","effortBenefit","rule","topLevelCategory","subCategory","language","fileType","location","confidence","recommendation","snippet","patch","title"];
+var DEFAULT_EMPTY_TEXT = "No findings match current filters.";
 
 function setStatus(message) {
   statusEl.textContent = message;
@@ -271,7 +273,12 @@ function renderTable() {
   var html = "";
   for (var i = 0; i < state.pageRows.length; i++) html += rowTemplate(state.pageRows[i], i);
   rowsEl.innerHTML = html;
-  if (state.pageRows.length > 0) emptyEl.classList.add("hidden"); else emptyEl.classList.remove("hidden");
+  if (state.pageRows.length > 0) {
+    emptyEl.classList.add("hidden");
+  } else {
+    emptyEl.textContent = DEFAULT_EMPTY_TEXT;
+    emptyEl.classList.remove("hidden");
+  }
   applyColumnVisibility();
   updatePager();
 }
@@ -459,25 +466,48 @@ function loadFileOptions() {
       }
       filePickerEl.innerHTML = html || '<option value="findings.json">findings.json</option>';
       if (files.length > 0) {
-        if (!state.currentFile) state.currentFile = files[0].name;
+        var names = files.map(function (f) { return f.name; });
+        if (!state.currentFile || names.indexOf(state.currentFile) === -1) {
+          state.currentFile = files[0].name;
+        }
         filePickerEl.value = state.currentFile;
+      } else {
+        state.currentFile = "findings.json";
+        filePickerEl.value = "findings.json";
       }
       setStatus("Loaded " + files.length + " findings file option(s)");
     });
 }
 
-function loadData(fileName) {
-  state.currentFile = fileName || filePickerEl.value || "findings.json";
-  setStatus("Loading " + state.currentFile + " ...");
-  return fetch("/api/findings-file?name=" + encodeURIComponent(state.currentFile), { cache: "no-store" })
+function loadData(fileName, allowFallback) {
+  if (allowFallback == null) allowFallback = true;
+  var requested = fileName || filePickerEl.value || state.currentFile || "findings.json";
+  state.currentFile = requested;
+  filePickerEl.value = requested;
+  var token = ++state.loadToken;
+  setStatus("Loading " + requested + " ...");
+  return fetch("/api/findings-file?name=" + encodeURIComponent(requested), { cache: "no-store" })
     .then(function (res) {
-      if (!res.ok) throw new Error("Failed to load " + state.currentFile + " (" + res.status + ")");
+      if (!res.ok) {
+        if (res.status === 404 && allowFallback) {
+          return loadFileOptions().then(function () {
+            var fallback = filePickerEl.value || state.currentFile || "findings.json";
+            if (fallback && fallback !== requested) return loadData(fallback, false);
+            throw new Error("Failed to load " + requested + " (404)");
+          });
+        }
+        throw new Error("Failed to load " + requested + " (" + res.status + ")");
+      }
       return res.json();
     })
     .then(function (payload) {
+      if (token !== state.loadToken) return;
       var json = payload.data || {};
       var findings = json.findings || [];
       state.all = findings.filter(function (f) { return get(f, ["llm_review", "isIssue"], true) !== false; });
+      state.currentFile = payload.name || requested;
+      if (filePickerEl) filePickerEl.value = state.currentFile;
+      emptyEl.textContent = DEFAULT_EMPTY_TEXT;
       refreshCategoryFilters();
       renderCards(json.summary || {});
       applyFilters();

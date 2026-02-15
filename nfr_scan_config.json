@@ -5,7 +5,7 @@
   "context_lines": 20,
   "max_findings": 300,
   "regex_workers": 1,
-  "max_llm": 120,
+  "max_llm": 60,
   "auto_continue_batches": false,
   "llm_workers": 1,
   "llm_retries": 2,
