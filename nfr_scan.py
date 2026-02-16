@@ -1754,10 +1754,63 @@ def _is_external_llm_boundary(provider_name, base_url):
     return True
 
 
+def _safe_ai_risk_rank(level):
+    v = str(level or "low").strip().lower()
+    if v == "high":
+        return 3
+    if v == "medium":
+        return 2
+    return 1
+
+
+def _safe_ai_risk_from_rank(rank):
+    r = int(rank or 1)
+    if r >= 3:
+        return "high"
+    if r == 2:
+        return "medium"
+    return "low"
+
+
+def _has_safe_ai_boundary_signal(text):
+    hay = str(text or "").lower()
+    pats = [
+        r"\bhttpclient\b",
+        r"\bopenaiclient\b",
+        r"\bpostasync\b",
+        r"\bsendasync\b",
+        r"\bfetch\s*\(",
+        r"\baxios\.post\s*\(",
+        r"\brequests\.post\s*\(",
+        r"\blog\s*\(",
+        r"\bwritealltext\b",
+        r"\bupload\b",
+    ]
+    return any(re.search(p, hay) for p in pats)
+
+
+def _is_safe_ai_noise_path(path):
+    text = str(path or "").replace("\\", "/").lower()
+    hints = [
+        "/test/",
+        "/tests/",
+        "/spec/",
+        "/fixtures/",
+        "/samples/",
+        "/example/",
+        "/examples/",
+        "/node_modules/",
+        "/wwwroot/lib/",
+        "/vendor/",
+    ]
+    if text.endswith(".min.js"):
+        return True
+    return any(h in text for h in hints)
+
+
 def _ai_policy_risk_for_finding(finding):
     hint = str(finding.get("safe_ai_risk_hint", "") or "").strip().lower()
-    if hint in {"high", "medium", "low"}:
-        return hint
+    base_from_hint = hint in {"high", "medium", "low"}
     hay = " ".join(
         [
             str(finding.get("rule_id", "")),
@@ -1767,40 +1820,48 @@ def _ai_policy_risk_for_finding(finding):
             str(finding.get("snippet", "")),
         ]
     ).lower()
-    high_re = [
-        r"\bauth\b",
-        r"\bidentity\b",
-        r"\bjwt\b",
-        r"\btoken\b",
-        r"\boauth\b",
-        r"\bopenid\b",
-        r"\bsso\b",
-        r"\bsecret\b",
-        r"\bprivate[_\s-]?key\b",
-        r"\bapi[_\s-]?key\b",
-        r"\bclient[_\s-]?secret\b",
-        r"\bencrypt(ion|ed)?\b",
-        r"\bdecrypt(ion|ed)?\b",
-        r"\bkey[_\s-]?vault\b",
-        r"\btenant\b",
-        r"\bmulti[-\s]?tenant\b",
-        r"\bclaims?\b",
-        r"\bconnectionstring\b",
+    if base_from_hint:
+        base_rank = _safe_ai_risk_rank(hint)
+    else:
+        base_rank = 1
+
+    # High risk: actual secret/token/key literals.
+    high_literal_pats = [
+        r"(?i)\b(password|api[_\s-]?key|client[_\s-]?secret|connectionstring|accountkey|sharedaccesskey|aws_secret_access_key|azure_client_secret|private[_\s-]?key)\b\s*[:=]\s*['\"][^'\"]{8,}['\"]",
+        r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b",
+        r"-----BEGIN (RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----",
+        r"(?i)authorization\s*[:=]\s*['\"]?bearer\s+[A-Za-z0-9._-]{15,}",
     ]
-    if any(re.search(p, hay) for p in high_re):
-        return "high"
-    medium_re = [
-        r"\bbusiness\b",
-        r"\blicen(s|c)e\b",
-        r"\bsubscription\b",
-        r"\brate[_\s-]?limit\b",
-        r"\bfeature[_\s-]?flag\b",
-        r"\bgating\b",
-        r"\bbilling\b",
+    if any(re.search(p, hay) for p in high_literal_pats):
+        base_rank = max(base_rank, 3)
+
+    # Medium risk: sensitive logic hints and infrastructure literals.
+    medium_pats = [
+        r"(?i)\b(generatejwt|createtoken|validatetoken|accesstoken|refreshtoken|openid|oauth|oidc|saml|identityserver)\b",
+        r"(?i)(?=.*\b(log|writealltext|postasync|sendasync|upload|serialize(?:object)?|tojson)\b)(?=.*\b(email|phone|address|ssn|aadhaar|pan|customer|user|profile)\b)",
+        r"(?i)(redis://|amqp://|kafka://|mongodb://|server=|host=|endpoint=|internal\.api|private\.api)",
     ]
-    if any(re.search(p, hay) for p in medium_re):
-        return "medium"
-    return "low"
+    if any(re.search(p, hay) for p in medium_pats):
+        base_rank = max(base_rank, 2)
+
+    # Low risk: architecture hints only.
+    low_pats = [
+        r"(?i)\b(ensuretenantaccess|validatetenantaccess|tenantauthorization|where\s*\([^)\n]{0,120}tenantid[^)\n]{0,120}\))\b",
+        r"(?i)\b(verifysignature|rsa\.verify|hmac|validatelicense|decryptlicense)\b",
+    ]
+    if any(re.search(p, hay) for p in low_pats):
+        base_rank = max(base_rank, 1)
+
+    # Boundary-aware one-level elevation when sensitive code appears near external/logging boundary.
+    is_sensitive = base_rank >= 2
+    if is_sensitive and _has_safe_ai_boundary_signal(hay):
+        base_rank = min(3, base_rank + 1)
+
+    # Suppress likely noisy contexts.
+    if _is_safe_ai_noise_path(finding.get("file", "")) and base_rank < 3:
+        base_rank = 1
+
+    return _safe_ai_risk_from_rank(base_rank)
 
 
 def _redact_snippet_for_external(snippet):
