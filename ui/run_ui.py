@@ -27,6 +27,31 @@ class SafeStaticHandler(SimpleHTTPRequestHandler):
     def _reports_dir(self):
         return self._repo_root() / "reports"
 
+    def _review_state_path(self):
+        return self._reports_dir() / "review_state.json"
+
+    def _load_review_state(self):
+        p = self._review_state_path()
+        if not p.exists():
+            return {"items": {}}
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return {"items": {}}
+        if not isinstance(data, dict):
+            return {"items": {}}
+        items = data.get("items")
+        if not isinstance(items, dict):
+            data["items"] = {}
+        return data
+
+    def _save_review_state(self, payload):
+        p = self._review_state_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(p)
+
     def _write_json(self, code, payload):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(code)
@@ -117,6 +142,10 @@ class SafeStaticHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/findings-files":
             return self._write_json(200, {"files": self._list_findings_files()})
 
+        if parsed.path == "/api/review-state":
+            data = self._load_review_state()
+            return self._write_json(200, data)
+
         if parsed.path == "/api/findings-file":
             query = parse_qs(parsed.query)
             name = unquote((query.get("name") or [""])[0]).strip()
@@ -138,6 +167,34 @@ class SafeStaticHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/review-state":
+            length = int(self.headers.get("content-length", "0"))
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                body = json.loads(raw.decode("utf-8"))
+            except Exception:
+                return self._write_json(400, {"error": "Invalid JSON payload"})
+            finding_key = str((body or {}).get("finding_key") or "").strip()
+            status = str((body or {}).get("status") or "").strip().lower()
+            file_name = str((body or {}).get("file_name") or "").strip()
+            allowed = {"todo", "in_progress", "verified", "resolved"}
+            if not finding_key:
+                return self._write_json(400, {"error": "finding_key is required"})
+            if status not in allowed:
+                return self._write_json(400, {"error": f"Invalid status. Allowed: {sorted(allowed)}"})
+
+            state = self._load_review_state()
+            items = state.get("items") if isinstance(state.get("items"), dict) else {}
+            entry = {
+                "status": status,
+                "file_name": file_name,
+                "updated_utc": datetime.utcnow().isoformat() + "Z",
+            }
+            items[finding_key] = entry
+            state["items"] = items
+            self._save_review_state(state)
+            return self._write_json(200, {"ok": True, "finding_key": finding_key, "entry": entry})
+
         if parsed.path != "/api/upload-findings":
             return self._write_json(404, {"error": "Unknown endpoint"})
 

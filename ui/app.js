@@ -2,6 +2,8 @@ var state = {
   all: [],
   shown: [],
   pageRows: [],
+  reviewState: {},
+  selectedFindingKey: "",
   currentPage: 1,
   pageSize: 20,
   currentFile: "findings.json",
@@ -33,6 +35,7 @@ var severityEl = document.getElementById("severityFilter");
 var sourceEl = document.getElementById("sourceFilter");
 var trustTierEl = document.getElementById("trustTierFilter");
 var validationEl = document.getElementById("validationFilter");
+var workflowStatusEl = document.getElementById("workflowStatusFilter");
 var quickWinEl = document.getElementById("quickWinFilter");
 var fallbackEl = document.getElementById("fallbackFilter");
 var topLevelEl = document.getElementById("topLevelFilter");
@@ -63,7 +66,7 @@ var nextPageBtnEl = document.getElementById("nextPageBtn");
 var lastPageBtnEl = document.getElementById("lastPageBtn");
 state.pageSize = Number(pageSizeEl && pageSizeEl.value ? pageSizeEl.value : 20) || 20;
 
-var COLUMN_ORDER = ["severity","source","trustTier","quickWin","effortBenefit","rule","topLevelCategory","subCategory","language","fileType","location","confidence","recommendation","snippet","patch","title"];
+var COLUMN_ORDER = ["severity","source","trustTier","quickWin","effortBenefit","workflowStatus","rule","topLevelCategory","subCategory","language","fileType","location","confidence","recommendation","snippet","patch","title"];
 var DEFAULT_EMPTY_TEXT = "No findings match current filters.";
 
 function setStatus(message) {
@@ -100,6 +103,22 @@ function quickWinOf(f) {
 
 function isIssueOf(f) {
   return Boolean(get(f, ["llm_review", "isIssue"], false));
+}
+
+function workflowStatusOf(f) {
+  var key = String(f.finding_key || "");
+  var rec = key ? state.reviewState[key] : null;
+  var status = String((rec && rec.status) || "").toLowerCase();
+  if (status === "in_progress" || status === "verified" || status === "resolved" || status === "todo") return status;
+  return "todo";
+}
+
+function workflowStatusLabel(status) {
+  var s = String(status || "").toLowerCase();
+  if (s === "in_progress") return "in_progress";
+  if (s === "verified") return "verified";
+  if (s === "resolved") return "resolved";
+  return "todo";
 }
 
 function fallbackOf(f) {
@@ -352,6 +371,7 @@ function rowTemplate(f, i) {
   html += td("trustTier", '<span class="trust-badge trust-' + esc(trustTierOf(f)) + '">' + esc(trustTierOf(f)) + '</span>');
   html += td("quickWin", quickWin ? '<span class="pill-yes">Yes</span>' : '<span class="pill-no">No</span>');
   html += td("effortBenefit", '<span class="mini">' + esc(effortBenefit) + '</span>');
+  html += td("workflowStatus", '<span class="trust-badge trust-' + esc(workflowStatusLabel(workflowStatusOf(f))) + '">' + esc(workflowStatusLabel(workflowStatusOf(f))) + '</span>');
   html += td("rule", esc(f.rule_id || "-"));
   html += td("topLevelCategory", esc(topLevelOf(f)));
   html += td("subCategory", esc(subCategoryOf(f)));
@@ -382,7 +402,7 @@ function applyColumnVisibility() {
 
 function renderColumnToggles() {
   var labels = {
-    severity:"Severity",source:"Source",trustTier:"Trust Tier",quickWin:"Quick Win",effortBenefit:"Effort/Benefit",rule:"Rule",topLevelCategory:"Top Level",subCategory:"Sub Category",language:"Language",fileType:"File Type",location:"Location",confidence:"Confidence",recommendation:"Recommendation",snippet:"Snippet",patch:"Patch",title:"Title"
+    severity:"Severity",source:"Source",trustTier:"Trust Tier",quickWin:"Quick Win",effortBenefit:"Effort/Benefit",workflowStatus:"Workflow Status",rule:"Rule",topLevelCategory:"Top Level",subCategory:"Sub Category",language:"Language",fileType:"File Type",location:"Location",confidence:"Confidence",recommendation:"Recommendation",snippet:"Snippet",patch:"Patch",title:"Title"
   };
   var html = "";
   for (var i = 0; i < COLUMN_ORDER.length; i++) {
@@ -441,6 +461,7 @@ function sortValue(f, col) {
   if (col === "trustTier") return trustTierOf(f);
   if (col === "quickWin") return quickWinOf(f) ? "1" : "0";
   if (col === "effortBenefit") return effortOf(f) + "/" + benefitOf(f);
+  if (col === "workflowStatus") return workflowStatusOf(f);
   if (col === "rule") return String(f.rule_id || "");
   if (col === "topLevelCategory") return topLevelOf(f);
   if (col === "subCategory") return subCategoryOf(f);
@@ -493,6 +514,7 @@ function includeByFilters(f) {
   if (trustTierEl && trustTierEl.value !== "ALL" && trustTierOf(f) !== trustTierEl.value) return false;
   if (validationEl && validationEl.value === "ISSUE" && !isIssue) return false;
   if (validationEl && validationEl.value === "FP" && isIssue) return false;
+  if (workflowStatusEl && workflowStatusEl.value !== "ALL" && workflowStatusOf(f) !== workflowStatusEl.value) return false;
 
   var qf = quickWinEl.value;
   if (qf === "YES" && !quickWinOf(f)) return false;
@@ -583,8 +605,12 @@ function detailCodeBlock(title, text, mode, language, matchText) {
 }
 
 function showDetails(f) {
+  state.selectedFindingKey = String(f.finding_key || "");
   var lr = f.llm_review || {};
   var loc = (f.file || "unknown") + ":" + (f.line || 1);
+  var ws = workflowStatusOf(f);
+  var wsRec = state.reviewState[String(f.finding_key || "")] || {};
+  var wsMeta = wsRec.updated_utc ? ("Updated: " + String(wsRec.updated_utc)) : "Not updated yet.";
   var content = "";
   content += detailBlock("Title", lr.title || f.rule_title || "-");
   content += detailBlock("Severity", sevOf(f));
@@ -597,6 +623,17 @@ function showDetails(f) {
   content += detailBlock("Location", loc);
   content += detailBlock("Why", lr.why || "-", false);
   content += detailBlock("Recommendation", lr.recommendation || "-", false);
+  content += '<section class="block"><h3>Workflow Status</h3>'
+    + '<div class="text-auto">'
+    + '<select id="reviewStatusSelect">'
+    + '<option value="todo"' + (ws === "todo" ? " selected" : "") + '>To Do</option>'
+    + '<option value="in_progress"' + (ws === "in_progress" ? " selected" : "") + '>In Progress</option>'
+    + '<option value="verified"' + (ws === "verified" ? " selected" : "") + '>Verified</option>'
+    + '<option value="resolved"' + (ws === "resolved" ? " selected" : "") + '>Resolved</option>'
+    + '</select> '
+    + '<button id="saveReviewStatusBtn" class="btn btn-lite" type="button">Save</button>'
+    + '<div class="mini" id="reviewStatusMeta">' + esc(wsMeta) + '</div>'
+    + '</div></section>';
   if (lr.changed_lines_reason) content += detailBlock("Patch Change Reason", String(lr.changed_lines_reason), false);
   content += detailBlock("Patch Status", patchStatusOf(f));
   if (state.viewMode === "safe_ai") {
@@ -614,6 +651,14 @@ function showDetails(f) {
     content += detailBlock("Suggested Patch", "Patch unavailable for this finding.");
   }
   detailsBodyEl.innerHTML = content;
+  var saveBtn = document.getElementById("saveReviewStatusBtn");
+  if (saveBtn) {
+    saveBtn.addEventListener("click", function () {
+      var sel = document.getElementById("reviewStatusSelect");
+      var nextStatus = sel ? sel.value : "todo";
+      saveWorkflowStatus(f, nextStatus);
+    });
+  }
 }
 
 function showError(err) {
@@ -621,6 +666,40 @@ function showError(err) {
   emptyEl.classList.remove("hidden");
   emptyEl.textContent = err && err.message ? err.message : "Failed to load findings.";
   setStatus("Error: " + emptyEl.textContent);
+}
+
+function loadReviewState() {
+  return fetch("/api/review-state", { cache: "no-store" })
+    .then(function (r) { if (!r.ok) throw new Error("Failed to load review state"); return r.json(); })
+    .then(function (payload) {
+      var items = payload && payload.items && typeof payload.items === "object" ? payload.items : {};
+      state.reviewState = items;
+    });
+}
+
+function saveWorkflowStatus(finding, status) {
+  if (!finding || !finding.finding_key) return;
+  var body = {
+    finding_key: String(finding.finding_key),
+    status: String(status || "todo"),
+    file_name: String(state.currentFile || "")
+  };
+  setStatus("Saving workflow status...");
+  fetch("/api/review-state", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  })
+    .then(function (r) { if (!r.ok) throw new Error("Failed to save workflow status"); return r.json(); })
+    .then(function (payload) {
+      if (payload && payload.finding_key && payload.entry) {
+        state.reviewState[payload.finding_key] = payload.entry;
+      }
+      applyFilters();
+      showDetails(finding);
+      setStatus("Workflow status saved.");
+    })
+    .catch(showError);
 }
 
 function loadFileOptions() {
@@ -712,7 +791,8 @@ function uploadFile(file) {
 }
 
 document.getElementById("reloadBtn").addEventListener("click", function () {
-  loadFileOptions()
+  loadReviewState()
+    .then(function () { return loadFileOptions(); })
     .then(function () {
       // Reload should prefer latest canonical pointers for operational runs.
       if (state.viewMode === "safe_ai") return loadData("safe_ai_risk.json");
@@ -757,6 +837,7 @@ severityEl.addEventListener("change", applyFilters);
 sourceEl.addEventListener("change", applyFilters);
 if (trustTierEl) trustTierEl.addEventListener("change", applyFilters);
 if (validationEl) validationEl.addEventListener("change", applyFilters);
+if (workflowStatusEl) workflowStatusEl.addEventListener("change", applyFilters);
 quickWinEl.addEventListener("change", applyFilters);
 fallbackEl.addEventListener("change", applyFilters);
 topLevelEl.addEventListener("change", function () {
@@ -903,4 +984,7 @@ renderColumnToggles();
 initSplitter();
 initSnippetHeight();
 initPatchHeight();
-loadFileOptions().then(function () { return loadData(state.currentFile); }).catch(showError);
+loadReviewState()
+  .then(function () { return loadFileOptions(); })
+  .then(function () { return loadData(state.currentFile); })
+  .catch(showError);

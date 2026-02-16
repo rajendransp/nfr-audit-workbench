@@ -77,6 +77,16 @@
         </select>
       </div>
       <div class="field">
+        <label for="workflowStatusFilter">Workflow Status</label>
+        <select id="workflowStatusFilter">
+          <option value="ALL">All</option>
+          <option value="todo">To Do</option>
+          <option value="in_progress">In Progress</option>
+          <option value="verified">Verified</option>
+          <option value="resolved">Resolved</option>
+        </select>
+      </div>
+      <div class="field">
         <label for="quickWinFilter">Quick Win</label>
         <select id="quickWinFilter">
           <option value="ALL">All</option>
@@ -142,6 +152,7 @@
                 <th data-col="trustTier">Trust Tier</th>
                 <th data-col="quickWin">Quick Win</th>
                 <th data-col="effortBenefit">Effort vs Benefit</th>
+                <th data-col="workflowStatus">Workflow Status</th>
                 <th data-col="rule">Rule</th>
                 <th data-col="topLevelCategory">Top Level</th>
                 <th data-col="subCategory">Sub Category</th>
