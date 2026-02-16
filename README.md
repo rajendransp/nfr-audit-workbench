@@ -142,6 +142,8 @@ LLM batching behavior:
 
 -   `--max-llm` is the LLM batch size (default `60`).
 -   `--regex-workers` controls regex rule parallelism (default `1`).
+-   `--output-layout flat|run-folder` controls artifact placement (default `flat`).
+-   `run-folder` writes run artifacts under `reports/runs/<project>__<timestamp>/` and keeps latest pointer files in `reports/`.
 -   `--llm-provider` selects provider (`ollama`, `openai`, `openrouter`, `xai`, `gemini`; default `ollama`).
 -   Safe AI policy controls for external providers:
 -   `--safe-ai-policy-mode off|warn|enforce` (default `warn`)
@@ -191,6 +193,8 @@ LLM batching behavior:
 -   After each batch, interactive runs ask whether to continue with the next batch.
 -   Use `--auto-continue-batches` for unattended runs (process all batches automatically).
 -   Use `--max-llm 0` to skip LLM review.
+-   When `--max-llm 0` is used, regex/Roslyn findings are still written to final findings JSON as `review_status=regex_only` with `llm_transport.error_kind=skipped`.
+-   If you want those same findings to be LLM-reviewed later, run a fresh scan (do not resume a queue that was completed in regex-only mode).
 -   Provider env wiring:
 -   `openai`: `OPENAI_API_KEY`, optional `OPENAI_MODEL`, `OPENAI_BASE_URL`
 -   `openrouter`: `OPENROUTER_API_KEY`, optional `OPENROUTER_MODEL`, `OPENROUTER_BASE_URL`
@@ -208,6 +212,7 @@ Default parameter values (from `nfr_scan_config.json`):
 -   `path`: `.`
 -   `rules`: `rules/dotnet_rules.json`
 -   `output_dir`: `reports`
+-   `output_layout`: `flat`
 -   `context_lines`: `20`
 -   `max_findings`: `300`
 -   `regex_workers`: `1`
@@ -311,6 +316,9 @@ Each run writes versioned files:
 -   `nfr_digest__<project>__<timestamp>.md`
 -   `nfr__<project>__<timestamp>.sarif`
 -   `fallback_findings__<project>__<timestamp>.json`
+-   `safe_ai_risk__<project>__<timestamp>.json` (Safe-AI dry-run/standalone)
+-   `safe_ai_risk_digest__<project>__<timestamp>.md` (Safe-AI dry-run/standalone)
+-   `safe_ai_risk__<project>__<timestamp>.sarif` (Safe-AI dry-run/standalone)
 
 Compatibility pointers are also updated:
 
@@ -318,6 +326,9 @@ Compatibility pointers are also updated:
 -   `nfr_digest.md`
 -   `nfr.sarif`
 -   `fallback_findings.json`
+-   `safe_ai_risk.json`
+-   `safe_ai_risk_digest.md`
+-   `safe_ai_risk.sarif`
 
 Finding objects include:
 

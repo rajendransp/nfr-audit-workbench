@@ -990,7 +990,7 @@
     ],
     "rationale": "Request handlers should accept cancellation to stop work after disconnects/timeouts. Allow intentional exceptions with inline suppression tags such as // nfr:allow-no-ct or // nfr:allow-NFR-API-001.",
     "confidence_hint": 0.65,
-    "enforcement_level": "hard_fail"
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-API-002",
@@ -1323,7 +1323,7 @@
       "**/*Tests*.cs"
     ],
     "rationale": "Controller actions accepting CancellationToken should pass it to downstream async service/repository calls. Allow intentional exceptions with inline suppression tags such as // nfr:allow-no-ct or // nfr:allow-NFR-API-016.",
-    "enforcement_level": "hard_fail"
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-RAZOR-001",

@@ -2,6 +2,7 @@
   "path": ".",
   "rules": "rules/dotnet_rules.json",
   "output_dir": "reports",
+  "output_layout": "run-folder",
   "context_lines": 20,
   "max_findings": 300,
   "regex_workers": 1,

@@ -109,6 +109,12 @@ def parse_args():
         help="Directory for reports",
     )
     parser.add_argument(
+        "--output-layout",
+        choices=["flat", "run-folder"],
+        default="run-folder",
+        help="Report layout: flat (legacy) or run-folder (reports/runs/<project>__<timestamp>).",
+    )
+    parser.add_argument(
         "--context-lines",
         type=int,
         default=20,
@@ -772,6 +778,14 @@ def _resolve_quality_path(rule_quality_file, output_dir):
     if not p.is_absolute():
         p = Path(output_dir) / p
     return p
+
+
+def _resolve_artifact_output_dir(output_root_dir, project_name, run_version, output_layout):
+    root = Path(output_root_dir)
+    layout = str(output_layout or "flat").strip().lower()
+    if layout == "run-folder":
+        return root / "runs" / f"{project_name}__{run_version}"
+    return root
 
 
 def load_rule_quality(path):
@@ -3033,7 +3047,7 @@ def load_queue_report(path):
     }
 
 
-def write_json_report(summary_data, output_dir, roslyn_meta, scan_meta):
+def write_json_report(summary_data, output_dir, roslyn_meta, scan_meta, pointers_dir=None):
     output_path = Path(output_dir) / scan_meta["findings_file"]
     payload = {
         "summary": {
@@ -3064,11 +3078,13 @@ def write_json_report(summary_data, output_dir, roslyn_meta, scan_meta):
     }
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     # Compatibility pointer for existing tools/UI
-    (Path(output_dir) / "findings.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    pointer_root = Path(pointers_dir) if pointers_dir else Path(output_dir)
+    pointer_root.mkdir(parents=True, exist_ok=True)
+    (pointer_root / "findings.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return output_path
 
 
-def write_fallback_report(summary_data, output_dir, scan_meta):
+def write_fallback_report(summary_data, output_dir, scan_meta, pointers_dir=None):
     path = Path(output_dir) / scan_meta["fallback_file"]
     payload = {
         "summary": {
@@ -3079,11 +3095,13 @@ def write_fallback_report(summary_data, output_dir, scan_meta):
         "fallback_findings": summary_data.get("fallback_findings", []),
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    (Path(output_dir) / "fallback_findings.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    pointer_root = Path(pointers_dir) if pointers_dir else Path(output_dir)
+    pointer_root.mkdir(parents=True, exist_ok=True)
+    (pointer_root / "fallback_findings.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
 
 
-def write_safe_ai_risk_report(findings, output_dir, scan_meta, provider_name, base_url):
+def write_safe_ai_risk_report(findings, output_dir, scan_meta, provider_name, base_url, pointers_dir=None):
     external_boundary = _is_external_llm_boundary(provider_name, base_url)
     items = []
     counts = Counter()
@@ -3119,11 +3137,13 @@ def write_safe_ai_risk_report(findings, output_dir, scan_meta, provider_name, ba
     run_version = scan_meta.get("run_version", datetime.now().strftime("%Y%m%d_%H%M%S"))
     out = Path(output_dir) / f"safe_ai_risk__{project}__{run_version}.json"
     out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    (Path(output_dir) / "safe_ai_risk.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    pointer_root = Path(pointers_dir) if pointers_dir else Path(output_dir)
+    pointer_root.mkdir(parents=True, exist_ok=True)
+    (pointer_root / "safe_ai_risk.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return out
 
 
-def write_safe_ai_risk_markdown(risk_payload, output_dir, scan_meta):
+def write_safe_ai_risk_markdown(risk_payload, output_dir, scan_meta, pointers_dir=None):
     summary = (risk_payload or {}).get("summary", {}) or {}
     findings = (risk_payload or {}).get("findings", []) or []
     provider = (risk_payload or {}).get("provider", "unknown")
@@ -3166,11 +3186,13 @@ def write_safe_ai_risk_markdown(risk_payload, output_dir, scan_meta):
 
     content = "\n".join(lines)
     path.write_text(content, encoding="utf-8")
-    (Path(output_dir) / "safe_ai_risk_digest.md").write_text(content, encoding="utf-8")
+    pointer_root = Path(pointers_dir) if pointers_dir else Path(output_dir)
+    pointer_root.mkdir(parents=True, exist_ok=True)
+    (pointer_root / "safe_ai_risk_digest.md").write_text(content, encoding="utf-8")
     return path
 
 
-def write_safe_ai_risk_sarif(risk_payload, output_dir, scan_meta):
+def write_safe_ai_risk_sarif(risk_payload, output_dir, scan_meta, pointers_dir=None):
     findings = (risk_payload or {}).get("findings", []) or []
     provider = (risk_payload or {}).get("provider", "unknown")
     external = bool((risk_payload or {}).get("external_boundary", False))
@@ -3231,11 +3253,13 @@ def write_safe_ai_risk_sarif(risk_payload, output_dir, scan_meta):
     run_version = scan_meta.get("run_version", datetime.now().strftime("%Y%m%d_%H%M%S"))
     path = Path(output_dir) / f"safe_ai_risk__{project}__{run_version}.sarif"
     path.write_text(json.dumps(sarif, indent=2), encoding="utf-8")
-    (Path(output_dir) / "safe_ai_risk.sarif").write_text(json.dumps(sarif, indent=2), encoding="utf-8")
+    pointer_root = Path(pointers_dir) if pointers_dir else Path(output_dir)
+    pointer_root.mkdir(parents=True, exist_ok=True)
+    (pointer_root / "safe_ai_risk.sarif").write_text(json.dumps(sarif, indent=2), encoding="utf-8")
     return path
 
 
-def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta):
+def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta, pointers_dir=None):
     path = Path(output_dir) / scan_meta["digest_file"]
     confirmed = summary_data["confirmed"]
 
@@ -3403,11 +3427,13 @@ def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta):
         lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
-    (Path(output_dir) / "nfr_digest.md").write_text("\n".join(lines), encoding="utf-8")
+    pointer_root = Path(pointers_dir) if pointers_dir else Path(output_dir)
+    pointer_root.mkdir(parents=True, exist_ok=True)
+    (pointer_root / "nfr_digest.md").write_text("\n".join(lines), encoding="utf-8")
     return path
 
 
-def write_sarif(summary_data, output_dir, scan_meta):
+def write_sarif(summary_data, output_dir, scan_meta, pointers_dir=None):
     rules = {}
     results = []
 
@@ -3466,7 +3492,9 @@ def write_sarif(summary_data, output_dir, scan_meta):
 
     path = Path(output_dir) / scan_meta["sarif_file"]
     path.write_text(json.dumps(sarif, indent=2), encoding="utf-8")
-    (Path(output_dir) / "nfr.sarif").write_text(json.dumps(sarif, indent=2), encoding="utf-8")
+    pointer_root = Path(pointers_dir) if pointers_dir else Path(output_dir)
+    pointer_root.mkdir(parents=True, exist_ok=True)
+    (pointer_root / "nfr.sarif").write_text(json.dumps(sarif, indent=2), encoding="utf-8")
     return path
 
 
@@ -3534,13 +3562,16 @@ def evaluate_ci_policy(summary_data, args):
     return {"mode": mode, "breached": bool(breaches), "messages": messages}
 
 
-def run_safe_ai_only(scan_path, output_dir, args, llm_provider, base_url):
+def run_safe_ai_only(scan_path, output_root_dir, args, llm_provider, base_url):
     project_name = _project_name_from_scan_path(scan_path)
     run_version = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = _resolve_artifact_output_dir(output_root_dir, project_name, run_version, args.output_layout)
+    output_dir.mkdir(parents=True, exist_ok=True)
     scan_meta = {
         "project": project_name,
         "run_version": run_version,
         "scan_path": str(scan_path),
+        "output_layout": str(args.output_layout),
     }
 
     log_progress(f"Safe AI standalone scan started for path: {scan_path}")
@@ -3585,10 +3616,12 @@ def run_safe_ai_only(scan_path, output_dir, args, llm_provider, base_url):
     log_progress(f"Safe AI regex pre-scan produced {len(safe_findings)} finding(s)")
     log_progress(f"Safe AI regex stage timing: {regex_stage_seconds:.2f}s")
 
-    risk_path = write_safe_ai_risk_report(safe_findings, output_dir, scan_meta, llm_provider, base_url)
+    risk_path = write_safe_ai_risk_report(
+        safe_findings, output_dir, scan_meta, llm_provider, base_url, pointers_dir=output_root_dir
+    )
     risk_payload = json.loads(risk_path.read_text(encoding="utf-8", errors="ignore"))
-    risk_md_path = write_safe_ai_risk_markdown(risk_payload, output_dir, scan_meta)
-    risk_sarif_path = write_safe_ai_risk_sarif(risk_payload, output_dir, scan_meta)
+    risk_md_path = write_safe_ai_risk_markdown(risk_payload, output_dir, scan_meta, pointers_dir=output_root_dir)
+    risk_sarif_path = write_safe_ai_risk_sarif(risk_payload, output_dir, scan_meta, pointers_dir=output_root_dir)
 
     risk_summary = (risk_payload.get("summary", {}) or {})
     log_progress(
@@ -3608,7 +3641,8 @@ def run_safe_ai_only(scan_path, output_dir, args, llm_provider, base_url):
         f"Low={risk_summary.get('low', 0)}"
     )
     print(f"Reports written: {risk_path.name}, {risk_md_path.name}, {risk_sarif_path.name}")
-    print(f"Latest pointers updated in: {output_dir}")
+    print(f"Run output directory: {output_dir}")
+    print(f"Latest pointers updated in: {output_root_dir}")
 
 
 def main():
@@ -3626,12 +3660,13 @@ def main():
     llm_api_key = runtime["api_key"]
 
     scan_path = Path(args.path).resolve()
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_root_dir = Path(args.output_dir)
+    output_root_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = output_root_dir
     if bool(args.safe_ai_only):
         if args.resume_queue:
             raise ValueError("--safe-ai-only cannot be combined with --resume-queue")
-        run_safe_ai_only(scan_path, output_dir, args, llm_provider, base_url)
+        run_safe_ai_only(scan_path, output_root_dir, args, llm_provider, base_url)
         return
     changed_lines_by_file = {}
     pre_scan_rule_stats = {}
@@ -3655,6 +3690,7 @@ def main():
         queue_file_path = Path(loaded["queue_path"])
         output_dir = queue_file_path.parent
         output_dir.mkdir(parents=True, exist_ok=True)
+        scan_meta["output_layout"] = scan_meta.get("output_layout", "flat")
         scan_path = Path(scan_meta.get("scan_path", str(scan_path))).resolve()
         findings = loaded["findings"]
         reviewed = loaded["reviewed"]
@@ -3675,12 +3711,15 @@ def main():
             "project": project_name,
             "run_version": run_version,
             "scan_path": str(scan_path),
+            "output_layout": str(args.output_layout),
             "findings_file": f"{base_name}.json",
             "queue_file": f"findings_queue__{project_name}__{run_version}.json",
             "digest_file": f"nfr_digest__{project_name}__{run_version}.md",
             "sarif_file": f"nfr__{project_name}__{run_version}.sarif",
             "fallback_file": f"fallback_findings__{project_name}__{run_version}.json",
         }
+        output_dir = _resolve_artifact_output_dir(output_root_dir, project_name, run_version, args.output_layout)
+        output_dir.mkdir(parents=True, exist_ok=True)
         log_progress(f"NFR Audit Workbench scan started for path: {scan_path}")
         log_progress(f"Output directory: {output_dir.resolve()}")
         ignore_globs = load_ignore_globs(scan_path, args.ignore_file)
@@ -3758,7 +3797,7 @@ def main():
             if args.baseline:
                 baseline_path = Path(args.baseline)
             else:
-                baseline_path = baseline_path_for_project(output_dir, args.baseline_dir, project_name)
+                baseline_path = baseline_path_for_project(output_root_dir, args.baseline_dir, project_name)
             baseline_keys = load_baseline_keys(str(baseline_path))
             findings = [f for f in findings_all if f["finding_key"] not in baseline_keys]
             log_progress(
@@ -3770,7 +3809,7 @@ def main():
             log_progress("Full scan mode enabled (incremental disabled).")
 
         if baseline_path is None:
-            baseline_path = baseline_path_for_project(output_dir, args.baseline_dir, project_name)
+            baseline_path = baseline_path_for_project(output_root_dir, args.baseline_dir, project_name)
         written_baseline = write_baseline_file(baseline_path, findings_all, scan_meta)
         log_progress(f"Baseline updated: {written_baseline}")
 
@@ -3788,21 +3827,23 @@ def main():
         status_by_key[fk] = "reviewed"
     reviewed = list(reviewed_by_key.values())
 
-    cache_path = _resolve_cache_path(args.llm_cache_file, output_dir)
+    cache_path = _resolve_cache_path(args.llm_cache_file, output_root_dir)
     llm_cache = load_llm_cache(cache_path) if args.use_llm_cache else {}
     if args.use_llm_cache:
         log_progress(f"Loaded LLM cache entries: {len(llm_cache)} from {cache_path}")
-    patch_template_cache_path = _resolve_patch_template_cache_path(args.patch_template_cache_file, output_dir)
+    patch_template_cache_path = _resolve_patch_template_cache_path(args.patch_template_cache_file, output_root_dir)
     patch_template_cache = load_patch_template_cache(patch_template_cache_path) if args.use_patch_template_cache else {}
     if args.use_patch_template_cache:
         log_progress(f"Loaded patch template cache entries: {len(patch_template_cache)} from {patch_template_cache_path}")
 
     pending_findings = [f for f in findings if status_by_key.get(f.get("finding_key")) != "reviewed"]
     if args.safe_ai_dry_run:
-        risk_path = write_safe_ai_risk_report(pending_findings, output_dir, scan_meta, llm_provider, base_url)
+        risk_path = write_safe_ai_risk_report(
+            pending_findings, output_dir, scan_meta, llm_provider, base_url, pointers_dir=output_root_dir
+        )
         risk_payload = json.loads(risk_path.read_text(encoding="utf-8", errors="ignore"))
-        risk_md_path = write_safe_ai_risk_markdown(risk_payload, output_dir, scan_meta)
-        risk_sarif_path = write_safe_ai_risk_sarif(risk_payload, output_dir, scan_meta)
+        risk_md_path = write_safe_ai_risk_markdown(risk_payload, output_dir, scan_meta, pointers_dir=output_root_dir)
+        risk_sarif_path = write_safe_ai_risk_sarif(risk_payload, output_dir, scan_meta, pointers_dir=output_root_dir)
         risk_summary = (risk_payload.get("summary", {}) or {})
         log_progress(
             "Safe AI dry-run summary: "
@@ -3816,7 +3857,7 @@ def main():
             f"Safe AI reports written: {risk_path.name}, {risk_md_path.name}, {risk_sarif_path.name}"
         )
         args.max_llm = 0
-    quality_path = _resolve_quality_path(args.rule_quality_file, output_dir)
+    quality_path = _resolve_quality_path(args.rule_quality_file, output_root_dir)
     quality_history = load_rule_quality(quality_path)
     noisy_rules = set()
     if args.auto_demote_noisy_rules:
@@ -3928,6 +3969,37 @@ def main():
 
     if batch_size <= 0:
         log_progress("Skipping LLM review because --max-llm is 0.")
+        regex_only_added = 0
+        for item in pending_findings:
+            fk = item.get("finding_key")
+            if not fk or fk in reviewed_by_key:
+                continue
+            regex_only_item = dict(item)
+            regex_only_item["llm_review"] = {
+                "isIssue": False,
+                "severity": regex_only_item.get("default_severity", "S3"),
+                "confidence": float(regex_only_item.get("confidence_hint") or _source_confidence_hint(regex_only_item)),
+                "why": "LLM review skipped (--max-llm=0). Regex/Roslyn finding retained for triage.",
+                "recommendation": "Review required.",
+                "patch": "unknown",
+            }
+            regex_only_item["llm_transport"] = {
+                "attempts": 0,
+                "attempts_allowed": 0,
+                "fallback_used": False,
+                "error_kind": "skipped",
+                "from_cache": False,
+                "recovered_after_retry": False,
+                "llm_skipped": True,
+            }
+            regex_only_item["llm_error_kind"] = "skipped"
+            regex_only_item["llm_attempts"] = 0
+            regex_only_item["llm_retried"] = False
+            regex_only_item["review_status"] = "regex_only"
+            reviewed_by_key[fk] = regex_only_item
+            status_by_key[fk] = "reviewed"
+            regex_only_added += 1
+        log_progress(f"LLM skipped mode: retained {regex_only_added} regex/roslyn finding(s) in final findings output.")
     elif total_for_llm == 0:
         log_progress("No pending representative findings available for LLM review.")
     else:
@@ -4021,10 +4093,10 @@ def main():
                 save_patch_template_cache(patch_template_cache_path, patch_template_cache)
 
             summary_data = summarize(reviewed)
-            json_path = write_json_report(summary_data, output_dir, roslyn_meta, scan_meta)
-            md_path = write_markdown(summary_data, output_dir, roslyn_meta, scan_meta)
-            sarif_path = write_sarif(summary_data, output_dir, scan_meta)
-            fallback_path = write_fallback_report(summary_data, output_dir, scan_meta)
+            json_path = write_json_report(summary_data, output_dir, roslyn_meta, scan_meta, pointers_dir=output_root_dir)
+            md_path = write_markdown(summary_data, output_dir, roslyn_meta, scan_meta, pointers_dir=output_root_dir)
+            sarif_path = write_sarif(summary_data, output_dir, scan_meta, pointers_dir=output_root_dir)
+            fallback_path = write_fallback_report(summary_data, output_dir, scan_meta, pointers_dir=output_root_dir)
             log_progress(
                 f"Merged outputs updated after batch {batch_no}: "
                 f"{json_path.name}, {md_path.name}, {sarif_path.name}, {fallback_path.name}"
@@ -4098,10 +4170,10 @@ def main():
         f"LLM latency_ms summary: avg={llm_lat['avg_ms']}, p50={llm_lat['p50_ms']}, "
         f"p95={llm_lat['p95_ms']}, count={llm_lat['count']}"
     )
-    json_path = write_json_report(summary_data, output_dir, roslyn_meta, scan_meta)
-    md_path = write_markdown(summary_data, output_dir, roslyn_meta, scan_meta)
-    sarif_path = write_sarif(summary_data, output_dir, scan_meta)
-    fallback_path = write_fallback_report(summary_data, output_dir, scan_meta)
+    json_path = write_json_report(summary_data, output_dir, roslyn_meta, scan_meta, pointers_dir=output_root_dir)
+    md_path = write_markdown(summary_data, output_dir, roslyn_meta, scan_meta, pointers_dir=output_root_dir)
+    sarif_path = write_sarif(summary_data, output_dir, scan_meta, pointers_dir=output_root_dir)
+    fallback_path = write_fallback_report(summary_data, output_dir, scan_meta, pointers_dir=output_root_dir)
     write_queue_report(findings, status_by_key, reviewed, output_dir, scan_meta, roslyn_meta)
     ci_policy = evaluate_ci_policy(summary_data, args)
     for msg in ci_policy.get("messages", []):
@@ -4110,7 +4182,8 @@ def main():
     print(f"NFR Audit Workbench scan complete. Reviewed: {len(reviewed)} | Confirmed: {len(summary_data['confirmed'])}")
     print(f"Source split (confirmed): {summary_data['by_source']}")
     print(f"Reports written: {json_path.name}, {md_path.name}, {sarif_path.name}, {fallback_path.name}")
-    print(f"Latest pointers updated in: {output_dir}")
+    print(f"Run output directory: {output_dir}")
+    print(f"Latest pointers updated in: {output_root_dir}")
     if ci_policy.get("breached"):
         mode = ci_policy.get("mode", "warn")
         if mode == "hard-fail":

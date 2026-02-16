@@ -42,11 +42,20 @@ class SafeStaticHandler(SimpleHTTPRequestHandler):
         patterns = ["findings__*.json", "safe_ai_risk__*.json", "uploaded__*.json"]
         candidates = []
         for pat in patterns:
-            candidates.extend(list(reports.glob(pat)))
-        for p in sorted(candidates, key=lambda x: x.stat().st_mtime, reverse=True):
+            candidates.extend(list(reports.rglob(pat)))
+        unique = {}
+        for p in candidates:
+            try:
+                rel = p.resolve().relative_to(reports.resolve()).as_posix()
+                unique[rel] = p
+            except Exception:
+                continue
+        sorted_paths = sorted(unique.values(), key=lambda x: x.stat().st_mtime, reverse=True)
+        for p in sorted_paths:
+            rel = p.resolve().relative_to(reports.resolve()).as_posix()
             files.append(
                 {
-                    "name": p.name,
+                    "name": rel,
                     "size": p.stat().st_size,
                     "modified_utc": datetime.utcfromtimestamp(p.stat().st_mtime).isoformat() + "Z",
                 }
@@ -111,7 +120,10 @@ class SafeStaticHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/findings-file":
             query = parse_qs(parsed.query)
             name = unquote((query.get("name") or [""])[0]).strip()
-            if not name or "/" in name or "\\" in name:
+            if not name:
+                return self._write_json(400, {"error": "Invalid file name"})
+            normalized = Path(name.replace("\\", "/"))
+            if normalized.is_absolute() or ".." in normalized.parts:
                 return self._write_json(400, {"error": "Invalid file name"})
             target = (self._reports_dir() / name).resolve()
             if not str(target).startswith(str(self._reports_dir().resolve())) or not target.exists():
