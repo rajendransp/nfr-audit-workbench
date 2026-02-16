@@ -64,12 +64,12 @@
   },
   {
     "id": "NFR-API-004A",
-    "title": "Manual JSON serialization in API path",
+    "title": "Manual JSON serialization used to build HTTP response",
     "category": "performance",
     "top_level_category": "rest_api",
     "sub_category": "performance",
-    "severity": "S2",
-    "pattern": "\\b(JsonConvert\\.SerializeObject|JsonConvert\\.DeserializeObject(?:<[^>]+>)?|JObject\\.Parse|JToken\\.Parse|JArray\\.Parse|JsonSerializer\\.Serialize|JsonSerializer\\.Deserialize)\\s*\\(",
+    "severity": "S3",
+    "pattern": "(?is)(\\breturn\\s+(?:Content|Ok|Json|Created|Accepted|Results\\.Json|TypedResults\\.Json)\\s*\\(\\s*(?:JsonConvert\\.SerializeObject|JsonSerializer\\.Serialize)\\s*\\(|\\bResponse\\.WriteAsync\\s*\\(\\s*(?:JsonConvert\\.SerializeObject|JsonSerializer\\.Serialize)\\s*\\()",
     "include_globs": [
       "*.cs"
     ],
@@ -78,8 +78,9 @@
       "**/obj/**",
       "**/*Tests*.cs"
     ],
-    "rationale": "Manual serialization in controller/service request paths can cause extra CPU/allocations and serializer drift. Prefer returning objects and letting ASP.NET formatters serialize. If needed for hashing/cache keys, keep it targeted and avoid hot loops.",
+    "rationale": "In HTTP response paths, prefer returning objects and letting ASP.NET Core formatters serialize. Manual JSON string responses can add CPU/allocations and serializer-settings drift. If a JSON string is intentionally required, document/suppress and keep it targeted.",
     "confidence_hint": 0.72,
+    "patch_policy": "advisory_only",
     "enforcement_level": "review"
   },
   {
@@ -100,6 +101,27 @@
     ],
     "rationale": "Using Newtonsoft and System.Text.Json with different settings can create API contract drift (naming, enum/date/null handling). Standardize serializer strategy or align settings explicitly.",
     "confidence_hint": 0.45,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-API-004C",
+    "title": "JSON serialize→deserialize round-trip",
+    "category": "performance",
+    "top_level_category": "rest_api",
+    "sub_category": "performance",
+    "severity": "S2",
+    "pattern": "(?is)(JsonConvert\\.SerializeObject|JsonSerializer\\.Serialize)\\s*\\([^;]{0,800}\\)\\s*;\\s*[^;]{0,800}\\b(JsonConvert\\.DeserializeObject(?:<[^>]+>)?|JsonSerializer\\.Deserialize)\\s*\\(",
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Serializing and immediately deserializing (or vice versa) is usually wasteful and increases CPU/allocations. Prefer mapping/cloning without JSON round-trips. If used intentionally for deep-clone, restrict to non-hot paths and document why.",
+    "confidence_hint": 0.7,
+    "patch_policy": "advisory_only",
     "enforcement_level": "review"
   },
   {
@@ -340,7 +362,7 @@
     "sub_category": "concurrency",
     "severity": "S2",
     "confidence_hint": 0.6,
-    "pattern": "\\bTask\\s*<[^>]+>\\s+[A-Za-z0-9_]+\\s*\\([^\\)]*\\bCancellationToken\\s+[A-Za-z0-9_]+[^\\)]*\\)[\\s\\S]{0,420}\\.[A-Za-z0-9_]*Async\\s*\\((?![^\\)]*\\bCancellationToken\\b)(?![^\\)]*\\bct\\b)(?![^\\)]*\\bstoppingToken\\b)[^\\)]*\\)",
+    "pattern": "(?is)\\[(Http(Get|Post|Put|Delete|Patch)|Route)\\b[^\\]]*\\][\\s\\S]{0,220}\\b(?:public|internal|protected)\\s+(?:async\\s+)?(?:Task|ValueTask|IActionResult|ActionResult|Task<[^>]+>|ValueTask<[^>]+>)\\s+[A-Za-z0-9_]+\\s*\\([^\\)]*\\bCancellationToken\\s+(?:cancellationToken|ct|token|requestAborted|stoppingToken)\\b[^\\)]*\\)[\\s\\S]{0,2200}\\b[A-Za-z0-9_]+Async\\s*\\((?![^;]{0,600}\\b(?:cancellationToken|ct|token|requestAborted|HttpContext\\.RequestAborted|stoppingToken)\\b)[^;]{0,600}\\)\\s*(?:\\.ConfigureAwait\\s*\\(\\s*false\\s*\\))?\\s*;",
     "ignore_comment_lines": true,
     "include_globs": [
       "*.cs"
@@ -350,7 +372,7 @@
       "**/obj/**",
       "**/*Tests*.cs"
     ],
-    "rationale": "Controller actions accepting CancellationToken should pass it to downstream async service/repository calls. Allow intentional exceptions with inline suppression tags such as // nfr:allow-no-ct or // nfr:allow-NFR-API-016.",
+    "rationale": "Endpoint/controller actions accepting CancellationToken should pass it to downstream async service/repository calls. Pattern is scoped to methods with route/http attributes to avoid repository-level false positives. Allow intentional exceptions with inline suppression tags such as // nfr:allow-no-ct or // nfr:allow-NFR-API-016.",
     "enforcement_level": "review"
   }
 ]

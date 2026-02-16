@@ -38,11 +38,27 @@ DEPENDENCY_RISK_HINTS = (
 
 SYSTEM_PROMPT = (
     "You are a senior .NET reliability/performance reviewer. "
+    "Be evidence-first and conservative: reject weak or mismatched findings. "
     "Return valid JSON only. No markdown. No prose outside JSON."
 )
 
 USER_TEMPLATE = """
 Evaluate this pre-scan finding. Confirm if this is a real non-functional risk.
+
+Validation policy (mandatory):
+1) Use only evidence visible in the provided snippet + rule metadata.
+2) If rule title/category does not match the code shown, reject the finding.
+3) Ignore matches that are only in comments/docs/strings unless the rule explicitly targets those.
+4) If snippet already contains the required mitigation (for example CancellationToken is already propagated), reject.
+5) Do not infer missing code outside snippet. If uncertain, reject.
+
+When rejecting:
+- set isIssue=false
+- keep severity from default context unless clearly lower
+- why must briefly explain why this is not a valid issue for this snippet
+- recommendation must be "No action needed for this snippet; rule likely false positive or needs tighter pattern."
+- patch must be "unknown"
+- changed_lines_reason must be ""
 
 Return JSON with exactly these keys:
 - isIssue: boolean
@@ -56,6 +72,7 @@ Return JSON with exactly these keys:
 - quick_win: boolean
 - testing_notes: array of short test ideas
 - patch: unified diff string or \"unknown\" if insufficient context
+- changed_lines_reason: short explanation for why changed lines are required (empty string if patch is unknown)
 
 Rule:
 {rule_json}
@@ -241,6 +258,24 @@ def parse_args():
         type=int,
         default=1,
         help="When a generated patch is a no-op, retry with explicit no-op feedback this many times.",
+    )
+    parser.add_argument(
+        "--patch-strict-locality",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Drop generated patches that modify lines outside ±N window of the finding location.",
+    )
+    parser.add_argument(
+        "--patch-locality-window",
+        type=int,
+        default=12,
+        help="Line window N for strict locality gate (±N around finding line).",
+    )
+    parser.add_argument(
+        "--patch-verify-pass",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run an optional second LLM pass to verify patch correctness against the snippet.",
     )
     parser.add_argument(
         "--openai-api-key",
@@ -1300,6 +1335,69 @@ def _infer_quick_win(severity, effort, benefit):
     return False
 
 
+def _post_llm_false_positive_gate(parsed, finding, fallback_used=False):
+    """Demote likely false positives when model text indicates non-applicability."""
+    if not isinstance(parsed, dict):
+        return parsed
+    if fallback_used:
+        return parsed
+    if not bool(parsed.get("isIssue", False)):
+        return parsed
+
+    title = str(parsed.get("title", "") or "").lower()
+    why = str(parsed.get("why", "") or "").lower()
+    rec = str(parsed.get("recommendation", "") or "").lower()
+    text = f"{title}\n{why}\n{rec}"
+
+    already_handled_hints = (
+        "already handled",
+        "already mitigated",
+        "already propagated",
+        "already passed",
+        "already uses",
+        "already has cancellationtoken",
+        "cancellationtoken is passed",
+        "token is passed",
+        "no issue in this snippet",
+        "not applicable",
+        "rule does not apply",
+        "false positive",
+        "comment-only",
+        "only in comment",
+    )
+    insufficient_evidence_hints = (
+        "insufficient evidence",
+        "not enough evidence",
+        "insufficient context",
+        "not enough context",
+        "cannot determine",
+        "can't determine",
+        "uncertain from snippet",
+        "unable to confirm",
+        "cannot confirm",
+    )
+    if not any(h in text for h in already_handled_hints + insufficient_evidence_hints):
+        return parsed
+
+    out = dict(parsed)
+    out["isIssue"] = False
+    try:
+        conf = float(out.get("confidence", 0.0) or 0.0)
+    except Exception:
+        conf = 0.0
+    out["confidence"] = min(conf, 0.45)
+    out["patch"] = "unknown"
+    out["changed_lines_reason"] = ""
+    out["recommendation"] = "No action needed for this snippet; rule likely false positive or needs tighter pattern."
+    notes = list(out.get("testing_notes", []) or [])
+    notes.append(
+        f"Post-LLM validity gate demoted this finding as non-actionable for snippet evidence ({finding.get('rule_id', 'unknown')})."
+    )
+    out["testing_notes"] = notes
+    out["post_llm_gate"] = "demoted_false_positive"
+    return out
+
+
 def _safe_name(value):
     cleaned = []
     for ch in str(value or ""):
@@ -1647,6 +1745,239 @@ def _patch_quality(patch_text):
     return "valid"
 
 
+def _patch_changed_lines(patch_text):
+    plus = []
+    minus = []
+    for line in str(patch_text or "").splitlines():
+        if line.startswith(("+++", "---", "@@")):
+            continue
+        if line.startswith("+"):
+            plus.append(line[1:])
+        elif line.startswith("-"):
+            minus.append(line[1:])
+    return plus, minus
+
+
+def _line_is_comment_in_diff(line):
+    t = str(line or "").lstrip()
+    if not t:
+        return True
+    if t.startswith("+") or t.startswith("-"):
+        t = t[1:].lstrip()
+    return t.startswith("//") or t.startswith("/*") or t.startswith("*") or t.startswith("*/") or t.startswith("///")
+
+
+def _normalize_diff_path(raw):
+    p = str(raw or "").strip()
+    if p.startswith("a/") or p.startswith("b/"):
+        p = p[2:]
+    return p.replace("\\", "/")
+
+
+def _extract_patch_locality_info(patch_text):
+    lines = str(patch_text or "").splitlines()
+    files = []
+    current_file = None
+    current_hunk_new_line = None
+    changed_by_file = {}
+
+    for line in lines:
+        if line.startswith("+++ "):
+            raw = line[4:].strip()
+            if raw == "/dev/null":
+                current_file = None
+                current_hunk_new_line = None
+                continue
+            current_file = _normalize_diff_path(raw)
+            if current_file not in files:
+                files.append(current_file)
+            changed_by_file.setdefault(current_file, set())
+            current_hunk_new_line = None
+            continue
+        if line.startswith("@@"):
+            m = re.search(r"\+(\d+)(?:,(\d+))?", line)
+            if not m:
+                current_hunk_new_line = None
+                continue
+            current_hunk_new_line = int(m.group(1))
+            continue
+        if current_file is None or current_hunk_new_line is None:
+            continue
+        if line.startswith("+") and not line.startswith("+++"):
+            changed_by_file[current_file].add(current_hunk_new_line)
+            current_hunk_new_line += 1
+            continue
+        if line.startswith("-") and not line.startswith("---"):
+            # Deletion consumes old line only; keep new-side cursor unchanged.
+            continue
+        if line.startswith(" "):
+            current_hunk_new_line += 1
+
+    return {
+        "files": files,
+        "changed_by_file": changed_by_file,
+    }
+
+
+def _patch_target_matches_finding(target_file, finding_file):
+    t = _normalize_diff_path(target_file).lower()
+    f = str(finding_file or "").replace("\\", "/").lower()
+    if not t or not f:
+        return False
+    if f.endswith("/" + t) or f == t:
+        return True
+    return Path(f).name.lower() == Path(t).name.lower()
+
+
+def _is_commentish_line(text):
+    t = str(text or "").strip()
+    if not t:
+        return True
+    return (
+        t.startswith("//")
+        or t.startswith("/*")
+        or t.startswith("*")
+        or t.startswith("*/")
+        or t.startswith("#")
+        or t.startswith("///")
+    )
+
+
+def _extract_param_name(param_text):
+    p = str(param_text or "").strip()
+    if not p:
+        return ""
+    p = p.split("=", 1)[0].strip()
+    p = re.sub(r"\b(this|ref|out|in|params)\b", "", p)
+    p = re.sub(r"\s+", " ", p).strip()
+    if not p:
+        return ""
+    # Last identifier-like token is usually parameter name.
+    m = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*$", p)
+    return m.group(1) if m else ""
+
+
+def _has_duplicate_param_name_in_added_signature(plus_lines):
+    for line in plus_lines:
+        text = str(line or "")
+        if "(" not in text or ")" not in text:
+            continue
+        # Heuristic: likely method/ctor signature line.
+        if not re.search(r"\b(public|private|protected|internal|async|static|Task|ValueTask|void|class)\b", text):
+            continue
+        m = re.search(r"\(([^)]*)\)", text)
+        if not m:
+            continue
+        raw_params = [x.strip() for x in m.group(1).split(",") if x.strip()]
+        if not raw_params:
+            continue
+        seen = set()
+        for rp in raw_params:
+            name = _extract_param_name(rp).lower()
+            if not name:
+                continue
+            if name in seen:
+                return True
+            seen.add(name)
+    return False
+
+
+def _patch_sanity_issues(patch_text, finding, strict_locality=False, locality_window=12):
+    issues = []
+    text = str(patch_text or "")
+    lower = text.lower()
+    if not text.strip() or text.strip().lower() == "unknown":
+        return issues
+
+    plus_lines, minus_lines = _patch_changed_lines(text)
+    changed = plus_lines + minus_lines
+    if changed and all(_is_commentish_line(x) for x in changed):
+        issues.append("comment_only_change")
+
+    if _has_duplicate_param_name_in_added_signature(plus_lines):
+        issues.append("duplicate_parameter_name")
+
+    forbidden_markers = [
+        "asqueryable(cancellationtoken)",
+        "jsonconvert.serializeobjectasync",
+    ]
+    if any(x in lower for x in forbidden_markers):
+        issues.append("hallucinated_or_invalid_api")
+
+    if re.search(r"\basync\s*\{", lower):
+        issues.append("invalid_async_syntax")
+
+    # Drop duplicate added lines that indicate broken patch assembly.
+    norm_plus = [re.sub(r"\s+", " ", str(x).strip()) for x in plus_lines if str(x).strip()]
+    if norm_plus:
+        seen = set()
+        dup = False
+        for line in norm_plus:
+            if line in seen:
+                dup = True
+                break
+            seen.add(line)
+        if dup:
+            issues.append("duplicate_added_lines")
+
+    rule_id = str((finding or {}).get("rule_id", "")).upper()
+    if rule_id and rule_id not in {"NFR-API-015"} and "usehsts" in lower:
+        issues.append("unrelated_security_change")
+
+    # Block patches that disable persistence paths.
+    removed_save = [x for x in minus_lines if re.search(r"\bSaveChanges(Async)?\s*\(", str(x))]
+    if removed_save:
+        added_save = [x for x in plus_lines if re.search(r"\bSaveChanges(Async)?\s*\(", str(x))]
+        if not added_save or all(_line_is_comment_in_diff(x) for x in added_save):
+            issues.append("unsafe_persistence_change")
+
+    # Block unrelated auth/security pipeline changes except for security-focused rules.
+    sec_tokens = r"\b(AllowAnonymous|Authorize|UseAuthentication|UseAuthorization|UseHsts|Role|Policy|Claim)\b"
+    touches_sec = any(re.search(sec_tokens, str(x), flags=re.IGNORECASE) for x in changed)
+    if touches_sec and rule_id not in {"NFR-API-015"}:
+        issues.append("unrelated_auth_or_security_change")
+
+    # Detect obvious boolean behavior flips on same assignment symbol.
+    lhs_minus = {}
+    for raw in minus_lines:
+        m = re.search(r"([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(true|false)\b", str(raw), flags=re.IGNORECASE)
+        if m:
+            lhs_minus[m.group(1).lower()] = m.group(2).lower()
+    for raw in plus_lines:
+        m = re.search(r"([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(true|false)\b", str(raw), flags=re.IGNORECASE)
+        if not m:
+            continue
+        lhs = m.group(1).lower()
+        rhs = m.group(2).lower()
+        if lhs in lhs_minus and lhs_minus[lhs] != rhs:
+            issues.append("unrelated_boolean_behavior_flip")
+            break
+
+    if bool(strict_locality):
+        info = _extract_patch_locality_info(text)
+        files = info.get("files", [])
+        changed_by_file = info.get("changed_by_file", {})
+        if len(files) != 1:
+            issues.append("multi_file_or_unverifiable_patch")
+        else:
+            target = files[0]
+            if not _patch_target_matches_finding(target, (finding or {}).get("file", "")):
+                issues.append("patch_targets_different_file")
+            else:
+                changed_lines = sorted(changed_by_file.get(target, set()))
+                if not changed_lines:
+                    issues.append("patch_line_unverifiable")
+                else:
+                    line = int((finding or {}).get("line", 1) or 1)
+                    window = max(0, int(locality_window or 0))
+                    low = max(1, line - window)
+                    high = line + window
+                    if any((ln < low or ln > high) for ln in changed_lines):
+                        issues.append("patch_outside_locality_window")
+
+    return sorted(set(issues))
+
+
 def _classify_llm_error(exc):
     if isinstance(exc, ValueError) and "JSON" in str(exc):
         return False, "parse_error"
@@ -1926,6 +2257,7 @@ def _build_policy_blocked_result(finding, policy_mode, policy_risk, external_bou
         "recommendation": "Review internally or use local-only model for sensitive code.",
         "testing_notes": ["Use local LLM or redacted snippet for external review."],
         "patch": "unknown",
+        "changed_lines_reason": "",
         "patch_quality": "unknown",
         "patch_attention": "unavailable",
         "patch_attention_reason": "policy_blocked",
@@ -1960,7 +2292,9 @@ def _patch_playbook_for_rule(rule_id):
         "NFR-DOTNET-003": "Prefer async/await over .Result/.Wait/GetAwaiter().GetResult(). Update signatures to async Task and propagate await safely.",
         "NFR-DOTNET-001": "Add CancellationToken parameter (ct) and pass ct to HttpClient async methods. Avoid CancellationToken.None in request paths.",
         "NFR-API-001": "Add CancellationToken to controller action signature and pass it through service/repo async calls.",
-        "NFR-API-016": "Propagate existing CancellationToken from controller to all downstream async operations.",
+        "NFR-API-016": "Propagate existing CancellationToken from controller to downstream async operations without introducing duplicate parameters.",
+        "NFR-API-004A": "Do not suggest JsonConvert.SerializeObjectAsync. If string payload is needed, keep synchronous serialization and optimize options/hot path. Use SerializeAsync only when writing to a stream.",
+        "NFR-API-004B": "Keep serializer contract consistent. Do not auto-switch APIs unless settings compatibility is preserved.",
         "NFR-FE-005A": "For dynamic HTML sources, sanitize with DOMPurify before assigning to innerHTML/dangerouslySetInnerHTML.",
         "NFR-FE-005B": "If raw HTML usage is required, sanitize; otherwise prefer textContent or safe render APIs.",
         "NFR-DOTNET-014": "Replace empty catch with explicit logging and rethrow unless swallowing is intentional and documented.",
@@ -2017,6 +2351,8 @@ def _confidence_for_patch_retry(parsed, finding):
 
 
 def _should_attempt_patch_retry(parsed, finding, prefer_patch_s1s2, prefer_patch_all, patch_min_confidence):
+    if str((finding or {}).get("patch_policy", "")).strip().lower() == "advisory_only":
+        return False
     sev = str((parsed or {}).get("severity") or finding.get("default_severity") or "S3").upper()
     if sev in {"S1", "S2"} and bool(prefer_patch_s1s2):
         return True
@@ -2079,7 +2415,12 @@ def save_patch_template_cache(cache_path, cache_data):
     p.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
 
 
-def _apply_patch_template_if_available(item, template_cache):
+def _apply_patch_template_if_available(
+    item,
+    template_cache,
+    patch_strict_locality=False,
+    patch_locality_window=12,
+):
     review = (item.get("llm_review", {}) or {})
     patch = str(review.get("patch", "unknown") or "unknown").strip().lower()
     if patch != "unknown":
@@ -2095,6 +2436,16 @@ def _apply_patch_template_if_available(item, template_cache):
     out_review = dict(review)
     out_review["patch"] = candidate
     out_review["patch_quality"] = _patch_quality(candidate)
+    sanity_issues = _patch_sanity_issues(
+        candidate,
+        out,
+        strict_locality=bool(patch_strict_locality),
+        locality_window=int(patch_locality_window or 0),
+    )
+    if sanity_issues:
+        out_review["patch"] = "unknown"
+        out_review["patch_quality"] = "unknown"
+        out_review["patch_sanity_issues"] = sanity_issues
     out_review["patch_from_template_cache"] = True
     attention, reason = _classify_patch_attention(out, out_review)
     out_review["patch_attention"] = attention
@@ -2179,9 +2530,14 @@ def _maybe_retry_patch_for_unknown(
         return parsed
 
     patch_prompt = (
-        "Return JSON only with key 'patch'.\n"
+        "Return JSON only with keys: patch, changed_lines_reason.\n"
         "Generate a minimal, safe unified diff patch for this finding.\n"
         "Use only symbols visible in snippet/context. If impossible, return {\"patch\":\"unknown\"}.\n\n"
+        "Hard constraints:\n"
+        "- Do not change unrelated behavior.\n"
+        "- Do not remove/disable persistence or security calls.\n"
+        "- Do not invent APIs or overloads.\n"
+        "- If signature changes are uncertain, return patch=unknown.\n\n"
         f"Rule ID: {finding.get('rule_id','unknown')}\n"
         f"Patch Playbook: {_patch_playbook_for_rule(finding.get('rule_id',''))}\n"
         f"Semantic Context: {_semantic_context_for_finding(finding)}\n"
@@ -2205,6 +2561,7 @@ def _maybe_retry_patch_for_unknown(
         candidate = str((patch_only or {}).get("patch", "unknown") or "unknown")
         if candidate.strip().lower() != "unknown":
             parsed["patch"] = candidate
+            parsed["changed_lines_reason"] = str((patch_only or {}).get("changed_lines_reason", "") or "").strip()
             parsed["patch_retry_used"] = True
             log_progress(
                 f"{provider_label} patch retry succeeded for {finding.get('rule_id','unknown')} "
@@ -2240,10 +2597,14 @@ def _retry_patch_after_noop(
         return parsed
     for attempt in range(1, attempts + 1):
         repair_prompt = (
-            "Return JSON only with key 'patch'.\n"
+            "Return JSON only with keys: patch, changed_lines_reason.\n"
             "Previous patch was a NO-OP (no effective code changes).\n"
             "Provide a corrected unified diff with real line changes, minimal and safe.\n"
             "Do not repeat identical +/- lines. If impossible, return {\"patch\":\"unknown\"}.\n\n"
+            "Hard constraints:\n"
+            "- Do not change unrelated behavior.\n"
+            "- Do not remove/disable persistence or security calls.\n"
+            "- Do not invent APIs or overloads.\n\n"
             f"Rule ID: {finding.get('rule_id','unknown')}\n"
             f"Patch Playbook: {_patch_playbook_for_rule(finding.get('rule_id',''))}\n"
             f"Semantic Context: {_semantic_context_for_finding(finding)}\n"
@@ -2268,6 +2629,7 @@ def _retry_patch_after_noop(
             repaired = _extract_json(content)
             candidate = str((repaired or {}).get("patch", "unknown") or "unknown")
             parsed["patch"] = candidate
+            parsed["changed_lines_reason"] = str((repaired or {}).get("changed_lines_reason", "") or "").strip()
             parsed["patch_repair_attempts"] = attempt
             if _patch_quality(candidate) != "no_op":
                 log_progress(
@@ -2280,6 +2642,93 @@ def _retry_patch_after_noop(
                 f"{provider_label} patch repair failed for {finding.get('rule_id','unknown')} "
                 f"at {finding.get('file','unknown')}:{finding.get('line',1)} (attempt {attempt}/{attempts}). Error: {exc}"
             )
+    return parsed
+
+
+def _verify_patch_semantics(
+    finding,
+    parsed,
+    provider_name,
+    provider_label,
+    model,
+    base_url,
+    api_key,
+    temperature,
+    connect_timeout_seconds,
+    read_timeout_seconds,
+    snippet_for_prompt,
+    enabled=False,
+):
+    if not bool(enabled):
+        return parsed
+    if not isinstance(parsed, dict):
+        return parsed
+    patch_text = str(parsed.get("patch", "unknown") or "unknown")
+    if patch_text.strip().lower() == "unknown":
+        return parsed
+
+    verify_prompt = (
+        "Return JSON only with keys: patch_valid, reason, confidence.\n"
+        "Validate whether the suggested patch is technically correct for the given finding and snippet.\n"
+        "Check for: wrong API usage, no-op edits, unrelated semantic changes, signature-breaking edits, "
+        "or changes not justified by the finding.\n"
+        "If uncertain, set patch_valid=false.\n\n"
+        f"Rule ID: {finding.get('rule_id','unknown')}\n"
+        f"Rule Title: {finding.get('rule_title','unknown')}\n"
+        f"File: {finding.get('file','unknown')}\n"
+        f"Line: {finding.get('line',1)}\n"
+        "Snippet:\n"
+        f"{snippet_for_prompt}\n\n"
+        "Patch:\n"
+        f"{patch_text}\n"
+    )
+
+    try:
+        content = _send_llm_request(
+            provider_name,
+            model,
+            base_url,
+            api_key,
+            verify_prompt,
+            temperature,
+            connect_timeout_seconds,
+            read_timeout_seconds,
+        )
+        verdict = _extract_json(content)
+    except Exception as exc:
+        parsed["patch_verification"] = {
+            "attempted": True,
+            "status": "error",
+            "reason": f"{provider_label} verifier failed: {exc}",
+        }
+        return parsed
+
+    patch_valid = bool(verdict.get("patch_valid", False))
+    reason = str(verdict.get("reason", "") or "").strip()
+    try:
+        conf = float(verdict.get("confidence", 0.0) or 0.0)
+    except Exception:
+        conf = 0.0
+    conf = max(0.0, min(conf, 1.0))
+
+    parsed["patch_verification"] = {
+        "attempted": True,
+        "status": "accepted" if patch_valid else "rejected",
+        "reason": reason,
+        "confidence": conf,
+    }
+    if patch_valid:
+        return parsed
+
+    parsed["patch"] = "unknown"
+    parsed["changed_lines_reason"] = ""
+    parsed["patch_quality"] = "unknown"
+    notes = list(parsed.get("testing_notes", []) or [])
+    notes.append(
+        "Patch verifier rejected suggested patch as not semantically safe/correct for the snippet."
+        + (f" Reason: {reason}" if reason else "")
+    )
+    parsed["testing_notes"] = notes
     return parsed
 
 
@@ -2340,6 +2789,9 @@ def _review_single_finding(
     prefer_patch_all_severities,
     patch_min_confidence,
     patch_repair_retries,
+    patch_strict_locality,
+    patch_locality_window,
+    patch_verify_pass,
     safe_ai_policy_mode,
     safe_ai_allow_external_high_risk,
     safe_ai_redact_medium,
@@ -2356,6 +2808,10 @@ def _review_single_finding(
             "Prioritize producing a minimal, safe unified diff patch for this S1/S2 finding. "
             "Use only symbols visible in snippet/context. If truly impossible, return patch='unknown'."
         )
+    patch_guidance += (
+        " Do not modify unrelated lines; do not remove/disable persistence or security calls; "
+        "do not invent APIs/overloads; if uncertain, return patch='unknown'."
+    )
     patch_playbook = _patch_playbook_for_rule(finding.get("rule_id", ""))
     semantic_context = _semantic_context_for_finding(finding)
     provider_name = _canonical_provider_name(provider)
@@ -2381,8 +2837,9 @@ def _review_single_finding(
     if str(finding.get("rule_id", "")).startswith("NFR-API-004"):
         rule_guidance = (
             "Do NOT suggest JsonConvert.SerializeObjectAsync (invalid API). "
-            "Prefer System.Text.Json stream-based async APIs (SerializeAsync/DeserializeAsync), "
-            "avoid serialize-deserialize round trips in hot paths, and move heavy serialization off request hot path."
+            "Only suggest SerializeAsync/DeserializeAsync when writing to or reading from streams. "
+            "If a string payload is required, keep synchronous serialization and optimize by reusing serializer options "
+            "and avoiding serialize-deserialize round trips in hot paths."
         )
     rule_payload = {
         "id": finding["rule_id"],
@@ -2462,6 +2919,7 @@ def _review_single_finding(
                 "recommendation": "Manual review required.",
                 "testing_notes": [f"Re-run scan after ensuring {provider_label} model/service is available."],
                 "patch": "unknown",
+                "changed_lines_reason": "",
             }
             fallback_used = True
             break
@@ -2472,14 +2930,21 @@ def _review_single_finding(
     parsed["severity"] = sev
     parsed["effort"] = _normalize_effort(parsed.get("effort"))
     parsed["benefit"] = _normalize_benefit(parsed.get("benefit"), sev)
+    parsed["changed_lines_reason"] = str(parsed.get("changed_lines_reason", "") or "").strip()
     if "quick_win" not in parsed:
         parsed["quick_win"] = _infer_quick_win(sev, parsed["effort"], parsed["benefit"])
     else:
         parsed["quick_win"] = bool(parsed.get("quick_win"))
+    parsed = _post_llm_false_positive_gate(parsed, finding, fallback_used=fallback_used)
     current_conf = _confidence_for_patch_retry(parsed, finding)
     if sev not in {"S1", "S2"} and current_conf < float(patch_min_confidence or 0.0):
         parsed["patch"] = "unknown"
+        parsed["changed_lines_reason"] = ""
         parsed["patch_policy"] = "confidence_gated"
+    if str(finding.get("patch_policy", "")).strip().lower() == "advisory_only":
+        parsed["patch"] = "unknown"
+        parsed["changed_lines_reason"] = ""
+        parsed["patch_policy"] = "advisory_only"
     parsed["patch_quality"] = _patch_quality(parsed.get("patch", "unknown"))
     parsed = _maybe_retry_patch_for_unknown(
         finding,
@@ -2516,14 +2981,45 @@ def _review_single_finding(
     if parsed["patch_quality"] == "valid" and not _is_unified_diff_like(parsed.get("patch", "")):
         parsed["patch_quality"] = "unknown"
         parsed["patch"] = "unknown"
+        parsed["changed_lines_reason"] = ""
         notes = list(parsed.get("testing_notes", []) or [])
         notes.append("Suggested patch was not a valid unified diff; manual fix proposal required.")
         parsed["testing_notes"] = notes
     if parsed["patch_quality"] == "no_op":
         parsed["patch"] = "unknown"
+        parsed["changed_lines_reason"] = ""
         notes = list(parsed.get("testing_notes", []) or [])
         notes.append("Suggested patch was a no-op; manual fix proposal required.")
         parsed["testing_notes"] = notes
+    sanity_issues = _patch_sanity_issues(
+        parsed.get("patch", "unknown"),
+        finding,
+        strict_locality=bool(patch_strict_locality),
+        locality_window=int(patch_locality_window or 0),
+    )
+    parsed["patch_sanity_issues"] = sanity_issues
+    if sanity_issues:
+        parsed["patch"] = "unknown"
+        parsed["changed_lines_reason"] = ""
+        parsed["patch_quality"] = "unknown"
+        notes = list(parsed.get("testing_notes", []) or [])
+        notes.append(f"Suggested patch failed sanity checks ({', '.join(sanity_issues)}); manual fix proposal required.")
+        parsed["testing_notes"] = notes
+    parsed = _verify_patch_semantics(
+        finding,
+        parsed,
+        provider_name,
+        provider_label,
+        model,
+        base_url,
+        api_key,
+        temperature,
+        connect_timeout_seconds,
+        read_timeout_seconds,
+        snippet_for_prompt,
+        enabled=bool(patch_verify_pass),
+    )
+    parsed["patch_quality"] = _patch_quality(parsed.get("patch", "unknown"))
     patch_attention, patch_attention_reason = _classify_patch_attention(finding, parsed)
     parsed["patch_attention"] = patch_attention
     parsed["patch_attention_reason"] = patch_attention_reason
@@ -2568,6 +3064,9 @@ def review_with_llm(
     prefer_patch_all_severities=True,
     patch_min_confidence=0.6,
     patch_repair_retries=1,
+    patch_strict_locality=False,
+    patch_locality_window=12,
+    patch_verify_pass=False,
     safe_ai_policy_mode="warn",
     safe_ai_allow_external_high_risk=False,
     safe_ai_redact_medium=True,
@@ -2599,6 +3098,9 @@ def review_with_llm(
                     prefer_patch_all_severities,
                     patch_min_confidence,
                     patch_repair_retries,
+                    patch_strict_locality,
+                    patch_locality_window,
+                    patch_verify_pass,
                     safe_ai_policy_mode,
                     safe_ai_allow_external_high_risk,
                     safe_ai_redact_medium,
@@ -2628,6 +3130,9 @@ def review_with_llm(
                 prefer_patch_all_severities,
                 patch_min_confidence,
                 patch_repair_retries,
+                patch_strict_locality,
+                patch_locality_window,
+                patch_verify_pass,
                 safe_ai_policy_mode,
                 safe_ai_allow_external_high_risk,
                 safe_ai_redact_medium,
@@ -3413,6 +3918,9 @@ def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta, pointers_di
         lines.append(f"- Location: `{item['file']}:{item['line']}`")
         lines.append(f"- Why: {review.get('why', 'N/A')}")
         lines.append(f"- Recommendation: {review.get('recommendation', 'N/A')}")
+        changed_reason = str(review.get("changed_lines_reason", "") or "").strip()
+        if changed_reason:
+            lines.append(f"- Patch Change Reason: {changed_reason}")
         notes = review.get("testing_notes", []) or []
         if notes:
             lines.append("- Testing Notes:")
@@ -3922,7 +4430,12 @@ def main():
             cached_review["llm_attempts"] = 0
             cached_review["llm_retried"] = False
             if args.use_patch_template_cache:
-                cached_review, _ = _apply_patch_template_if_available(cached_review, patch_template_cache)
+                cached_review, _ = _apply_patch_template_if_available(
+                    cached_review,
+                    patch_template_cache,
+                    patch_strict_locality=bool(args.patch_strict_locality),
+                    patch_locality_window=int(args.patch_locality_window),
+                )
             expanded = expand_cluster_review(cached_review, cluster_by_rep_key[rep["finding_key"]])
             for item in expanded:
                 reviewed_by_key[item["finding_key"]] = item
@@ -4036,6 +4549,9 @@ def main():
                 prefer_patch_all_severities=bool(args.prefer_patch_all_severities),
                 patch_min_confidence=float(args.patch_min_confidence),
                 patch_repair_retries=int(args.patch_repair_retries),
+                patch_strict_locality=bool(args.patch_strict_locality),
+                patch_locality_window=int(args.patch_locality_window),
+                patch_verify_pass=bool(args.patch_verify_pass),
                 safe_ai_policy_mode=str(args.safe_ai_policy_mode),
                 safe_ai_allow_external_high_risk=bool(args.safe_ai_allow_external_high_risk),
                 safe_ai_redact_medium=bool(args.safe_ai_redact_medium),
@@ -4051,7 +4567,12 @@ def main():
 
             for rep_result in batch_reviewed:
                 if args.use_patch_template_cache:
-                    rep_result, template_applied = _apply_patch_template_if_available(rep_result, patch_template_cache)
+                    rep_result, template_applied = _apply_patch_template_if_available(
+                        rep_result,
+                        patch_template_cache,
+                        patch_strict_locality=bool(args.patch_strict_locality),
+                        patch_locality_window=int(args.patch_locality_window),
+                    )
                     if template_applied:
                         log_progress(
                             f"Patch template cache applied for {rep_result.get('rule_id','unknown')} "

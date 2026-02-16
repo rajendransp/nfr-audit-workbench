@@ -28,7 +28,7 @@
     "top_level_category": "dotnet",
     "sub_category": "concurrency",
     "severity": "S2",
-    "pattern": "\\.(ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync|AnyAsync|CountAsync|LongCountAsync|SumAsync|AverageAsync|MinAsync|MaxAsync|FirstAsync|SingleAsync|FindAsync|ExecuteUpdateAsync|ExecuteDeleteAsync)\\s*\\((?![^)]*\\b(CancellationToken|ct|stoppingToken|token|cancellationToken|requestAborted)\\b)[^)]*\\)",
+    "pattern": "(?is)\\b(?:AnyAsync|ToListAsync|FirstAsync|FirstOrDefaultAsync|SingleAsync|SingleOrDefaultAsync|CountAsync|LongCountAsync|SumAsync|AverageAsync|MinAsync|MaxAsync|FindAsync|ExecuteUpdateAsync|ExecuteDeleteAsync)\\s*\\((?![^;]{0,800}\\b(?:cancellationToken|ct|token|requestAborted|HttpContext\\.RequestAborted|stoppingToken)\\b)[^;]{0,800}\\)\\s*(?:\\.ConfigureAwait\\s*\\(\\s*false\\s*\\))?\\s*;",
     "include_globs": [
       "*.cs"
     ],
@@ -45,13 +45,13 @@
   },
   {
     "id": "NFR-DOTNET-003",
-    "title": "Blocking wait in async-capable code",
+    "title": "Blocking wait primitives in async-capable code",
     "category": "performance",
     "top_level_category": "dotnet",
     "sub_category": "concurrency",
     "severity": "S2",
-    "confidence_hint": 0.6,
-    "pattern": "(\\.GetAwaiter\\s*\\(\\)\\.GetResult\\s*\\(\\)|\\.Wait\\s*\\(|\\bTask\\.Wait(All|Any)\\s*\\(|\\b[A-Za-z_][A-Za-z0-9_]*Async\\s*\\([^)]*\\)\\s*\\.\\s*Result\\b)",
+    "confidence_hint": 0.75,
+    "pattern": "(\\.GetAwaiter\\s*\\(\\)\\.GetResult\\s*\\(\\)|\\.Wait\\s*\\(|\\bTask\\.Wait(All|Any)\\s*\\()",
     "ignore_comment_lines": true,
     "include_globs": [
       "*.cs"
@@ -63,7 +63,30 @@
       "**/*.designer.cs",
       "**/Migrations/**"
     ],
-    "rationale": "Blocking waits can cause deadlocks and thread pool starvation. Regex heuristics may produce false positives; treat as review unless confirmed in request-path code.",
+    "rationale": "Blocking wait primitives (.Wait / GetAwaiter().GetResult / Task.Wait*) can cause deadlocks and thread pool starvation. High-signal even with regex; still review unless confirmed in hot paths.",
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-DOTNET-003B",
+    "title": "Task.Result on async call result",
+    "category": "performance",
+    "top_level_category": "dotnet",
+    "sub_category": "concurrency",
+    "severity": "S3",
+    "confidence_hint": 0.45,
+    "pattern": "(?is)\\b[A-Za-z_][A-Za-z0-9_]*Async\\s*\\([\\s\\S]{0,600}\\)\\s*\\.\\s*Result\\b",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*.g.cs",
+      "**/*.designer.cs",
+      "**/Migrations/**"
+    ],
+    "rationale": "Accessing .Result on an async call result can block threads and deadlock in some contexts. Regex is heuristic (multi-line/lambda-safe); treat as review and confirm callsite.",
     "enforcement_level": "review"
   },
   {
@@ -257,6 +280,7 @@
     "severity": "S2",
     "confidence_hint": 0.75,
     "pattern": "\\bCancellationToken\\.None\\b",
+    "ignore_comment_lines": true,
     "include_globs": [
       "*.cs"
     ],
@@ -370,12 +394,12 @@
   },
   {
     "id": "NFR-DOTNET-019",
-    "title": "Parallel.ForEachAsync without token",
+    "title": "Parallel.ForEachAsync without cancellation token",
     "category": "reliability",
     "top_level_category": "dotnet",
     "sub_category": "concurrency",
     "severity": "S2",
-    "pattern": "\\bParallel\\.ForEachAsync\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
+    "pattern": "(?is)\\bParallel\\.ForEachAsync\\s*\\((?![\\s\\S]{0,900}\\b(?:cancellationToken|token|ct|requestAborted|HttpContext\\.RequestAborted|stoppingToken|CancellationToken)\\b)(?![\\s\\S]{0,900}\\bParallelOptions\\b)[\\s\\S]{0,900}\\)\\s*(?:\\.ConfigureAwait\\s*\\(\\s*false\\s*\\))?\\s*;?",
     "include_globs": [
       "*.cs"
     ],
@@ -383,8 +407,8 @@
       "**/bin/**",
       "**/obj/**"
     ],
-    "rationale": "Parallel loops should be cancellable to avoid runaway background work.",
-    "confidence_hint": 0.7,
+    "rationale": "Parallel.ForEachAsync should be cancellable. Regex checks within the same statement (multi-line/lambda-safe) for a CancellationToken-like argument or ParallelOptions; otherwise flags for review.",
+    "confidence_hint": 0.72,
     "enforcement_level": "review"
   },
   {
@@ -428,6 +452,29 @@
       "**/*.designer.cs"
     ],
     "rationale": "Manual sync JSON serialization can add CPU/allocations in hot paths. In API/controller paths prefer returning objects and framework serialization; keep manual serialization for targeted hashing/cache/log use-cases.",
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-DOTNET-022",
+    "title": "Async call result not awaited or returned",
+    "category": "reliability",
+    "top_level_category": "dotnet",
+    "sub_category": "concurrency",
+    "severity": "S2",
+    "pattern": "(?m)^\\s*(?!await\\b)(?!return\\b)(?!_\\s*=)(?!var\\s+_\\s*=)(?!//)[A-Za-z_][A-Za-z0-9_\\.<>]*Async\\s*\\([^;\\n]*\\)\\s*(?:\\.ConfigureAwait\\s*\\(\\s*false\\s*\\))?\\s*;",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs",
+      "**/*.g.cs",
+      "**/*.designer.cs"
+    ],
+    "rationale": "Standalone async invocations that are neither awaited nor returned can hide failures or complete later than expected. This rule catches likely fire-and-forget mistakes such as calling AddRangeAsync(...) without await/return.",
+    "confidence_hint": 0.7,
     "enforcement_level": "review"
   },
   {
@@ -972,6 +1019,170 @@
     "enforcement_level": "review"
   },
   {
+    "id": "NFR-RAZOR-001",
+    "title": "Large list rendering without Virtualize",
+    "category": "performance",
+    "top_level_category": "front_end",
+    "sub_category": "loading",
+    "severity": "S4",
+    "confidence_hint": 0.35,
+    "pattern": "@foreach\\s*\\(\\s*var\\s+\\w+\\s+in\\s+(items|rows|results|records|logs|data)\\b[^\\)]*\\)\\s*\\{(?![\\s\\S]{0,420}<Virtualize\\b)",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.razor"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**",
+      "**/Scripts/ej2/**",
+      "**/jquery*/**"
+    ],
+    "rationale": "Virtualization is recommended for large collections; heuristic triggers only when loop source name suggests a potentially large dataset. Review.",
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-RAZOR-002",
+    "title": "Frequent @oninput handler without shaping",
+    "category": "performance",
+    "top_level_category": "front_end",
+    "sub_category": "loading",
+    "severity": "S4",
+    "confidence_hint": 0.35,
+    "pattern": "@on(input|keyup)\\s*=\\s*\"[^\"]+\"(?![\\s\\S]{0,180}(Debounce|Throttle|debounce|throttle))",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.razor"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**",
+      "**/Scripts/ej2/**",
+      "**/jquery*/**"
+    ],
+    "rationale": "@oninput/@onkeyup can fire frequently; consider debouncing only when handler triggers expensive work (server calls, filtering, heavy state updates). Review.",
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-RAZOR-003",
+    "title": "IJSRuntime call inside loop",
+    "category": "performance",
+    "top_level_category": "front_end",
+    "sub_category": "concurrency",
+    "severity": "S2",
+    "confidence_hint": 0.6,
+    "pattern": "\\b(OnAfterRender(Async)?|@foreach|foreach)\\b[\\s\\S]{0,360}\\b(jsRuntime|JS|IJSRuntime)\\.(Invoke|InvokeAsync)\\b",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.razor",
+      "*.razor.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**",
+      "**/Scripts/ej2/**",
+      "**/jquery*/**"
+    ],
+    "rationale": "Repeated JS interop calls inside loops can create severe client/server latency and contention.",
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-RAZOR-004",
+    "title": "Risky raw HTML rendering via MarkupString",
+    "category": "reliability",
+    "top_level_category": "front_end",
+    "sub_category": "loading",
+    "severity": "S1",
+    "confidence_hint": 0.8,
+    "pattern": "(new\\s+MarkupString\\s*\\(\\s*(await\\s+)?(response|html|content|markdown|model\\.|request|query|input|value|data)\\b|\\(MarkupString\\)\\s*(await\\s+)?(response|html|content|markdown|model\\.|request|query|input|value|data)\\b)",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.razor",
+      "*.razor.cs",
+      "*.cshtml"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**",
+      "**/Scripts/ej2/**",
+      "**/jquery*/**"
+    ],
+    "rationale": "Raw HTML rendering should be tightly controlled to avoid unsafe content injection paths.",
+    "enforcement_level": "hard_fail"
+  },
+  {
+    "id": "NFR-RAZOR-004B",
+    "title": "Generic MarkupString raw HTML usage",
+    "category": "reliability",
+    "top_level_category": "front_end",
+    "sub_category": "loading",
+    "severity": "S3",
+    "confidence_hint": 0.5,
+    "pattern": "(new\\s+MarkupString\\s*\\(|\\(MarkupString\\)\\s*[A-Za-z_][A-Za-z0-9_]*)",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.razor",
+      "*.razor.cs",
+      "*.cshtml"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**",
+      "**/Scripts/ej2/**",
+      "**/jquery*/**"
+    ],
+    "rationale": "Generic MarkupString usage is context-dependent; review trust boundaries and sanitization guarantees.",
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-RAZOR-005",
+    "title": "Synchronous work in lifecycle method",
+    "category": "performance",
+    "top_level_category": "front_end",
+    "sub_category": "performance",
+    "severity": "S2",
+    "confidence_hint": 0.65,
+    "pattern": "\\b(OnInitialized|OnParametersSet)\\s*\\([^\\)]*\\)\\s*\\{[\\s\\S]{0,260}\\b(Thread\\.Sleep|File\\.ReadAllText|\\.Result\\b|\\.Wait\\s*\\()",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.razor.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**",
+      "**/Scripts/ej2/**",
+      "**/jquery*/**"
+    ],
+    "rationale": "Blocking operations in component lifecycle methods can freeze rendering and hurt UX under load.",
+    "enforcement_level": "review"
+  },
+  {
     "id": "NFR-API-001",
     "title": "Controller action missing CancellationToken",
     "category": "reliability",
@@ -1036,12 +1247,12 @@
   },
   {
     "id": "NFR-API-004A",
-    "title": "Manual JSON serialization in API path",
+    "title": "Manual JSON serialization used to build HTTP response",
     "category": "performance",
     "top_level_category": "rest_api",
     "sub_category": "performance",
-    "severity": "S2",
-    "pattern": "\\b(JsonConvert\\.SerializeObject|JsonConvert\\.DeserializeObject(?:<[^>]+>)?|JObject\\.Parse|JToken\\.Parse|JArray\\.Parse|JsonSerializer\\.Serialize|JsonSerializer\\.Deserialize)\\s*\\(",
+    "severity": "S3",
+    "pattern": "(?is)(\\breturn\\s+(?:Content|Ok|Json|Created|Accepted|Results\\.Json|TypedResults\\.Json)\\s*\\(\\s*(?:JsonConvert\\.SerializeObject|JsonSerializer\\.Serialize)\\s*\\(|\\bResponse\\.WriteAsync\\s*\\(\\s*(?:JsonConvert\\.SerializeObject|JsonSerializer\\.Serialize)\\s*\\()",
     "include_globs": [
       "*.cs"
     ],
@@ -1050,8 +1261,9 @@
       "**/obj/**",
       "**/*Tests*.cs"
     ],
-    "rationale": "Manual serialization in controller/service request paths can cause extra CPU/allocations and serializer drift. Prefer returning objects and letting ASP.NET formatters serialize. If needed for hashing/cache keys, keep it targeted and avoid hot loops.",
+    "rationale": "In HTTP response paths, prefer returning objects and letting ASP.NET Core formatters serialize. Manual JSON string responses can add CPU/allocations and serializer-settings drift. If a JSON string is intentionally required, document/suppress and keep it targeted.",
     "confidence_hint": 0.72,
+    "patch_policy": "advisory_only",
     "enforcement_level": "review"
   },
   {
@@ -1072,6 +1284,27 @@
     ],
     "rationale": "Using Newtonsoft and System.Text.Json with different settings can create API contract drift (naming, enum/date/null handling). Standardize serializer strategy or align settings explicitly.",
     "confidence_hint": 0.45,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-API-004C",
+    "title": "JSON serialize→deserialize round-trip",
+    "category": "performance",
+    "top_level_category": "rest_api",
+    "sub_category": "performance",
+    "severity": "S2",
+    "pattern": "(?is)(JsonConvert\\.SerializeObject|JsonSerializer\\.Serialize)\\s*\\([^;]{0,800}\\)\\s*;\\s*[^;]{0,800}\\b(JsonConvert\\.DeserializeObject(?:<[^>]+>)?|JsonSerializer\\.Deserialize)\\s*\\(",
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Serializing and immediately deserializing (or vice versa) is usually wasteful and increases CPU/allocations. Prefer mapping/cloning without JSON round-trips. If used intentionally for deep-clone, restrict to non-hot paths and document why.",
+    "confidence_hint": 0.7,
+    "patch_policy": "advisory_only",
     "enforcement_level": "review"
   },
   {
@@ -1312,7 +1545,7 @@
     "sub_category": "concurrency",
     "severity": "S2",
     "confidence_hint": 0.6,
-    "pattern": "\\bTask\\s*<[^>]+>\\s+[A-Za-z0-9_]+\\s*\\([^\\)]*\\bCancellationToken\\s+[A-Za-z0-9_]+[^\\)]*\\)[\\s\\S]{0,420}\\.[A-Za-z0-9_]*Async\\s*\\((?![^\\)]*\\bCancellationToken\\b)(?![^\\)]*\\bct\\b)(?![^\\)]*\\bstoppingToken\\b)[^\\)]*\\)",
+    "pattern": "(?is)\\[(Http(Get|Post|Put|Delete|Patch)|Route)\\b[^\\]]*\\][\\s\\S]{0,220}\\b(?:public|internal|protected)\\s+(?:async\\s+)?(?:Task|ValueTask|IActionResult|ActionResult|Task<[^>]+>|ValueTask<[^>]+>)\\s+[A-Za-z0-9_]+\\s*\\([^\\)]*\\bCancellationToken\\s+(?:cancellationToken|ct|token|requestAborted|stoppingToken)\\b[^\\)]*\\)[\\s\\S]{0,2200}\\b[A-Za-z0-9_]+Async\\s*\\((?![^;]{0,600}\\b(?:cancellationToken|ct|token|requestAborted|HttpContext\\.RequestAborted|stoppingToken)\\b)[^;]{0,600}\\)\\s*(?:\\.ConfigureAwait\\s*\\(\\s*false\\s*\\))?\\s*;",
     "ignore_comment_lines": true,
     "include_globs": [
       "*.cs"
@@ -1322,171 +1555,7 @@
       "**/obj/**",
       "**/*Tests*.cs"
     ],
-    "rationale": "Controller actions accepting CancellationToken should pass it to downstream async service/repository calls. Allow intentional exceptions with inline suppression tags such as // nfr:allow-no-ct or // nfr:allow-NFR-API-016.",
-    "enforcement_level": "review"
-  },
-  {
-    "id": "NFR-RAZOR-001",
-    "title": "Large list rendering without Virtualize",
-    "category": "performance",
-    "top_level_category": "front_end",
-    "sub_category": "loading",
-    "severity": "S4",
-    "confidence_hint": 0.35,
-    "pattern": "@foreach\\s*\\(\\s*var\\s+\\w+\\s+in\\s+(items|rows|results|records|logs|data)\\b[^\\)]*\\)\\s*\\{(?![\\s\\S]{0,420}<Virtualize\\b)",
-    "ignore_comment_lines": true,
-    "include_globs": [
-      "*.razor"
-    ],
-    "exclude_globs": [
-      "**/bin/**",
-      "**/obj/**",
-      "**/*.min.js",
-      "**/vendor/**",
-      "**/lib/**",
-      "**/wwwroot/lib/**",
-      "**/Scripts/ej2/**",
-      "**/jquery*/**"
-    ],
-    "rationale": "Virtualization is recommended for large collections; heuristic triggers only when loop source name suggests a potentially large dataset. Review.",
-    "enforcement_level": "review"
-  },
-  {
-    "id": "NFR-RAZOR-002",
-    "title": "Frequent @oninput handler without shaping",
-    "category": "performance",
-    "top_level_category": "front_end",
-    "sub_category": "loading",
-    "severity": "S4",
-    "confidence_hint": 0.35,
-    "pattern": "@on(input|keyup)\\s*=\\s*\"[^\"]+\"(?![\\s\\S]{0,180}(Debounce|Throttle|debounce|throttle))",
-    "ignore_comment_lines": true,
-    "include_globs": [
-      "*.razor"
-    ],
-    "exclude_globs": [
-      "**/bin/**",
-      "**/obj/**",
-      "**/*.min.js",
-      "**/vendor/**",
-      "**/lib/**",
-      "**/wwwroot/lib/**",
-      "**/Scripts/ej2/**",
-      "**/jquery*/**"
-    ],
-    "rationale": "@oninput/@onkeyup can fire frequently; consider debouncing only when handler triggers expensive work (server calls, filtering, heavy state updates). Review.",
-    "enforcement_level": "review"
-  },
-  {
-    "id": "NFR-RAZOR-003",
-    "title": "IJSRuntime call inside loop",
-    "category": "performance",
-    "top_level_category": "front_end",
-    "sub_category": "concurrency",
-    "severity": "S2",
-    "confidence_hint": 0.6,
-    "pattern": "\\b(OnAfterRender(Async)?|@foreach|foreach)\\b[\\s\\S]{0,360}\\b(jsRuntime|JS|IJSRuntime)\\.(Invoke|InvokeAsync)\\b",
-    "ignore_comment_lines": true,
-    "include_globs": [
-      "*.razor",
-      "*.razor.cs"
-    ],
-    "exclude_globs": [
-      "**/bin/**",
-      "**/obj/**",
-      "**/*Tests*.cs",
-      "**/*.min.js",
-      "**/vendor/**",
-      "**/lib/**",
-      "**/wwwroot/lib/**",
-      "**/Scripts/ej2/**",
-      "**/jquery*/**"
-    ],
-    "rationale": "Repeated JS interop calls inside loops can create severe client/server latency and contention.",
-    "enforcement_level": "review"
-  },
-  {
-    "id": "NFR-RAZOR-004",
-    "title": "Risky raw HTML rendering via MarkupString",
-    "category": "reliability",
-    "top_level_category": "front_end",
-    "sub_category": "loading",
-    "severity": "S1",
-    "confidence_hint": 0.8,
-    "pattern": "(new\\s+MarkupString\\s*\\(\\s*(await\\s+)?(response|html|content|markdown|model\\.|request|query|input|value|data)\\b|\\(MarkupString\\)\\s*(await\\s+)?(response|html|content|markdown|model\\.|request|query|input|value|data)\\b)",
-    "ignore_comment_lines": true,
-    "include_globs": [
-      "*.razor",
-      "*.razor.cs",
-      "*.cshtml"
-    ],
-    "exclude_globs": [
-      "**/bin/**",
-      "**/obj/**",
-      "**/*Tests*.cs",
-      "**/*.min.js",
-      "**/vendor/**",
-      "**/lib/**",
-      "**/wwwroot/lib/**",
-      "**/Scripts/ej2/**",
-      "**/jquery*/**"
-    ],
-    "rationale": "Raw HTML rendering should be tightly controlled to avoid unsafe content injection paths.",
-    "enforcement_level": "hard_fail"
-  },
-  {
-    "id": "NFR-RAZOR-004B",
-    "title": "Generic MarkupString raw HTML usage",
-    "category": "reliability",
-    "top_level_category": "front_end",
-    "sub_category": "loading",
-    "severity": "S3",
-    "confidence_hint": 0.5,
-    "pattern": "(new\\s+MarkupString\\s*\\(|\\(MarkupString\\)\\s*[A-Za-z_][A-Za-z0-9_]*)",
-    "ignore_comment_lines": true,
-    "include_globs": [
-      "*.razor",
-      "*.razor.cs",
-      "*.cshtml"
-    ],
-    "exclude_globs": [
-      "**/bin/**",
-      "**/obj/**",
-      "**/*.min.js",
-      "**/vendor/**",
-      "**/lib/**",
-      "**/wwwroot/lib/**",
-      "**/Scripts/ej2/**",
-      "**/jquery*/**"
-    ],
-    "rationale": "Generic MarkupString usage is context-dependent; review trust boundaries and sanitization guarantees.",
-    "enforcement_level": "review"
-  },
-  {
-    "id": "NFR-RAZOR-005",
-    "title": "Synchronous work in lifecycle method",
-    "category": "performance",
-    "top_level_category": "front_end",
-    "sub_category": "performance",
-    "severity": "S2",
-    "confidence_hint": 0.65,
-    "pattern": "\\b(OnInitialized|OnParametersSet)\\s*\\([^\\)]*\\)\\s*\\{[\\s\\S]{0,260}\\b(Thread\\.Sleep|File\\.ReadAllText|\\.Result\\b|\\.Wait\\s*\\()",
-    "ignore_comment_lines": true,
-    "include_globs": [
-      "*.razor.cs"
-    ],
-    "exclude_globs": [
-      "**/bin/**",
-      "**/obj/**",
-      "**/*Tests*.cs",
-      "**/*.min.js",
-      "**/vendor/**",
-      "**/lib/**",
-      "**/wwwroot/lib/**",
-      "**/Scripts/ej2/**",
-      "**/jquery*/**"
-    ],
-    "rationale": "Blocking operations in component lifecycle methods can freeze rendering and hurt UX under load.",
+    "rationale": "Endpoint/controller actions accepting CancellationToken should pass it to downstream async service/repository calls. Pattern is scoped to methods with route/http attributes to avoid repository-level false positives. Allow intentional exceptions with inline suppression tags such as // nfr:allow-no-ct or // nfr:allow-NFR-API-016.",
     "enforcement_level": "review"
   }
 ]

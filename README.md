@@ -142,7 +142,7 @@ LLM batching behavior:
 
 -   `--max-llm` is the LLM batch size (default `60`).
 -   `--regex-workers` controls regex rule parallelism (default `1`).
--   `--output-layout flat|run-folder` controls artifact placement (default `flat`).
+-   `--output-layout flat|run-folder` controls artifact placement (default `run-folder`).
 -   `run-folder` writes run artifacts under `reports/runs/<project>__<timestamp>/` and keeps latest pointer files in `reports/`.
 -   `--llm-provider` selects provider (`ollama`, `openai`, `openrouter`, `xai`, `gemini`; default `ollama`).
 -   Safe AI policy controls for external providers:
@@ -158,10 +158,13 @@ LLM batching behavior:
 -   `--dedup-before-llm` (default on) clusters similar findings (same file/function/rule/match) and sends representative items to LLM.
 -   `--use-llm-cache` (default on) caches LLM decisions across runs in `--llm-cache-file` (default `llm_review_cache.json` under output dir).
 -   `--adaptive-llm-workers` (default on) reduces workers on timeout/fallback spikes and slowly increases after stable batches.
--   `--prefer-patch-s1s2` (default on) retries once with a patch-focused prompt when S1/S2 findings return `patch=unknown`.
--   `--prefer-patch-all-severities` (default on) enables patch-focused retry for non-S1/S2 findings when confidence is high enough.
+-   `--prefer-patch-s1s2` (default off) retries once with a patch-focused prompt when S1/S2 findings return `patch=unknown`.
+-   `--prefer-patch-all-severities` (default off) enables patch-focused retry for non-S1/S2 findings when confidence is high enough.
 -   `--patch-min-confidence` (default `0.6`) gates non-S1/S2 patch retry and low-confidence patch generation.
--   `--patch-repair-retries` (default `1`) retries with explicit no-op feedback when patch output is a no-op.
+-   `--patch-repair-retries` (default `0`) retries with explicit no-op feedback when patch output is a no-op.
+-   `--patch-strict-locality` (default `true`) drops patch suggestions that modify lines outside a local window around the matched finding.
+-   `--patch-locality-window` (default `12`) sets locality window N for strict mode (allowed patch lines are within `line ± N`).
+-   `--patch-verify-pass` (default off) runs an optional second LLM pass to semantically validate generated patches against snippet/rule context.
 -   `--use-patch-template-cache` (default on) and `--patch-template-cache-file` reuse successful patch templates across similar findings.
 -   `--fast-high-confidence-routing` enables fast mode: high-confidence regex findings are auto-confirmed without LLM.
 -   `--high-confidence-threshold` (default `0.9`) and `--high-confidence-max-severity` (default `S2`) control fast-route eligibility.
@@ -180,6 +183,8 @@ LLM batching behavior:
   `NFR-FE-005B` (generic raw HTML usage, S3 review warning).
 -   FE/Razor packs exclude common vendor/minified paths by default to reduce non-actionable noise.
 -   LLM patch guard marks no-op diffs as `patch_quality=no_op` and downgrades patch output to `unknown`.
+-   Primary LLM prompt enforces snippet-level evidence checks and should mark non-applicable cases as `isIssue=false`.
+-   Post-LLM hard gate auto-demotes results when rationale indicates `already handled` or `insufficient evidence`.
 -   S1/S2 findings now bias the LLM prompt toward returning a minimal safe patch where possible.
 -   Reports include `summary.patch_metrics` (`generated`, `unknown`, `no_op_dropped`, `valid_quality`, `safe_generated`, `needs_attention_generated`, `template_cache_applied`, `total_reviewed`).
 -   Reports include `summary.ai_policy_metrics` (`external_boundary_findings`, `blocked_findings`, `redacted_findings`, `high_risk_findings`, `medium_risk_findings`).
@@ -188,7 +193,7 @@ LLM batching behavior:
 -   Incremental mode is on by default (`--incremental`): only new/changed findings are sent to LLM versus persisted baseline.
 -   Use `--no-incremental` for full scan mode.
 -   Baseline persistence defaults to `<output-dir>/<baseline-dir>/<project>.json` where `--baseline-dir` defaults to `baselines`.
--   Timeout/retry controls: `--llm-connect-timeout-seconds` (default `20`), `--llm-read-timeout-seconds` (default `180`), `--llm-retries` (default `2`), `--llm-retry-backoff-seconds` (default `1.5`).
+-   Timeout/retry controls: `--llm-connect-timeout-seconds` (default `20`), `--llm-read-timeout-seconds` (default `120`), `--llm-retries` (default `2`), `--llm-retry-backoff-seconds` (default `1.5`).
 -   Retries are used for retriable failures (timeout, connection errors, HTTP `429`, HTTP `5xx`). Non-retriable failures are logged and fallback review is used.
 -   After each batch, interactive runs ask whether to continue with the next batch.
 -   Use `--auto-continue-batches` for unattended runs (process all batches automatically).
@@ -212,7 +217,7 @@ Default parameter values (from `nfr_scan_config.json`):
 -   `path`: `.`
 -   `rules`: `rules/dotnet_rules.json`
 -   `output_dir`: `reports`
--   `output_layout`: `flat`
+-   `output_layout`: `run-folder`
 -   `context_lines`: `20`
 -   `max_findings`: `300`
 -   `regex_workers`: `1`
@@ -230,10 +235,13 @@ Default parameter values (from `nfr_scan_config.json`):
 -   `safe_ai_dry_run`: `false`
 -   `safe_ai_only`: `false`
 -   `safe_ai_rules`: `rules/safe_ai_rules.json`
--   `prefer_patch_s1s2`: `true`
--   `prefer_patch_all_severities`: `true`
+-   `prefer_patch_s1s2`: `false`
+-   `prefer_patch_all_severities`: `false`
 -   `patch_min_confidence`: `0.6`
--   `patch_repair_retries`: `1`
+-   `patch_repair_retries`: `0`
+-   `patch_strict_locality`: `true`
+-   `patch_locality_window`: `12`
+-   `patch_verify_pass`: `false`
 -   `openai_api_key`: `""`
 -   `openai_model`: `""`
 -   `openai_base_url`: `""`
@@ -361,7 +369,9 @@ UI capabilities:
 -   Findings file dropdown for versioned results.
 -   Upload findings JSON and explore it (`uploaded__<timestamp>__<name>.json`).
 -   Severity/source/quick-win/fallback/search filters.
+-   Validation filter (`All`, `Confirmed Issue`, `False Positive / Non-Issue`).
 -   Trust-tier filter and badge (`Regex-only`, `LLM-confirmed`, `Fallback`, `Fast-routed`, `Roslyn`).
+-   Summary cards include `False Positives` for `llm_review.isIssue=false` rows.
 -   Top-level and sub-category filters (`dotnet`/`front_end`/`rest_api` and `concurrency`/`performance`/`loading`).
 -   Sortable table columns (including top-level/sub-category grouping columns).
 -   Flexible grid columns and pagination.

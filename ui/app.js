@@ -32,6 +32,7 @@ var state = {
 var severityEl = document.getElementById("severityFilter");
 var sourceEl = document.getElementById("sourceFilter");
 var trustTierEl = document.getElementById("trustTierFilter");
+var validationEl = document.getElementById("validationFilter");
 var quickWinEl = document.getElementById("quickWinFilter");
 var fallbackEl = document.getElementById("fallbackFilter");
 var topLevelEl = document.getElementById("topLevelFilter");
@@ -97,11 +98,22 @@ function quickWinOf(f) {
   return Boolean(get(f, ["llm_review", "quick_win"], false));
 }
 
+function isIssueOf(f) {
+  return Boolean(get(f, ["llm_review", "isIssue"], false));
+}
+
 function fallbackOf(f) {
   return Boolean(get(f, ["llm_transport", "fallback_used"], false));
 }
 
 function trustTierOf(f) {
+  var reviewStatus = String(f.review_status || "").trim().toLowerCase();
+  var skipped = Boolean(get(f, ["llm_transport", "llm_skipped"], false));
+  if (reviewStatus === "regex_only" || reviewStatus === "roslyn_only" || skipped) {
+    var src = String(f.source || "").toLowerCase();
+    if (src === "roslyn") return "roslyn";
+    return "regex_only";
+  }
   var explicitTier = String(f.trust_tier || "").trim().toLowerCase();
   if (explicitTier) return explicitTier;
   if (fallbackOf(f)) return "fallback";
@@ -285,9 +297,20 @@ function renderCards(summary) {
     cardsEl.innerHTML = safeHtml;
     return;
   }
+  var confirmedComputed = 0;
+  var falsePositiveComputed = 0;
+  for (var idx = 0; idx < state.all.length; idx++) {
+    if (isIssueOf(state.all[idx])) confirmedComputed++;
+    else falsePositiveComputed++;
+  }
+  var reviewedCount = summary.total_reviewed != null ? summary.total_reviewed : state.all.length;
+  var confirmedCount = summary.confirmed_issues != null ? summary.confirmed_issues : confirmedComputed;
+  var falsePositiveCount = Math.max(0, reviewedCount - confirmedCount);
+  if (state.all.length > 0) falsePositiveCount = falsePositiveComputed;
   var rows = [
-    ["Reviewed", summary.total_reviewed != null ? summary.total_reviewed : state.all.length],
-    ["Confirmed", summary.confirmed_issues != null ? summary.confirmed_issues : state.all.length],
+    ["Reviewed", reviewedCount],
+    ["Confirmed", confirmedCount],
+    ["False Positives", falsePositiveCount],
     ["S1", get(summary, ["by_severity", "S1"], 0)],
     ["S2", get(summary, ["by_severity", "S2"], 0)],
     ["Regex", get(summary, ["by_source", "regex"], 0)],
@@ -464,9 +487,12 @@ function refreshSortIndicators() {
 function includeByFilters(f) {
   var sev = sevOf(f);
   var source = String(f.source || "unknown").toLowerCase();
+  var isIssue = isIssueOf(f);
   if (severityEl.value !== "ALL" && sev !== severityEl.value) return false;
   if (sourceEl.value !== "ALL" && source !== sourceEl.value) return false;
   if (trustTierEl && trustTierEl.value !== "ALL" && trustTierOf(f) !== trustTierEl.value) return false;
+  if (validationEl && validationEl.value === "ISSUE" && !isIssue) return false;
+  if (validationEl && validationEl.value === "FP" && isIssue) return false;
 
   var qf = quickWinEl.value;
   if (qf === "YES" && !quickWinOf(f)) return false;
@@ -571,6 +597,7 @@ function showDetails(f) {
   content += detailBlock("Location", loc);
   content += detailBlock("Why", lr.why || "-", false);
   content += detailBlock("Recommendation", lr.recommendation || "-", false);
+  if (lr.changed_lines_reason) content += detailBlock("Patch Change Reason", String(lr.changed_lines_reason), false);
   content += detailBlock("Patch Status", patchStatusOf(f));
   if (state.viewMode === "safe_ai") {
     var risk = get(f, ["ai_policy", "risk"], "low");
@@ -611,6 +638,9 @@ function loadFileOptions() {
         var names = files.map(function (f) { return f.name; });
         if (!state.currentFile || names.indexOf(state.currentFile) === -1) {
           state.currentFile = files[0].name;
+        } else if (state.currentFile.indexOf("uploaded__") === 0 && names.indexOf("findings.json") !== -1) {
+          // Prefer latest canonical pointer over stale uploaded file selections.
+          state.currentFile = "findings.json";
         }
         filePickerEl.value = state.currentFile;
       } else {
@@ -652,7 +682,9 @@ function loadData(fileName, allowFallback) {
         setViewMode("findings");
       }
       var findings = json.findings || [];
-      state.all = findings.filter(function (f) { return get(f, ["llm_review", "isIssue"], true) !== false; });
+      // Keep all reviewed findings visible in UI, including non-issue/demoted rows.
+      // Summary cards still distinguish reviewed vs confirmed counts.
+      state.all = findings.slice();
       state.currentFile = payload.name || requested;
       if (filePickerEl) filePickerEl.value = state.currentFile;
       emptyEl.textContent = DEFAULT_EMPTY_TEXT;
@@ -680,7 +712,13 @@ function uploadFile(file) {
 }
 
 document.getElementById("reloadBtn").addEventListener("click", function () {
-  loadFileOptions().then(function () { return loadData(state.currentFile); }).catch(showError);
+  loadFileOptions()
+    .then(function () {
+      // Reload should prefer latest canonical pointers for operational runs.
+      if (state.viewMode === "safe_ai") return loadData("safe_ai_risk.json");
+      return loadData("findings.json");
+    })
+    .catch(showError);
 });
 
 if (tabFindingsEl) {
@@ -718,6 +756,7 @@ uploadEl.addEventListener("change", function () { uploadFile(uploadEl.files[0]).
 severityEl.addEventListener("change", applyFilters);
 sourceEl.addEventListener("change", applyFilters);
 if (trustTierEl) trustTierEl.addEventListener("change", applyFilters);
+if (validationEl) validationEl.addEventListener("change", applyFilters);
 quickWinEl.addEventListener("change", applyFilters);
 fallbackEl.addEventListener("change", applyFilters);
 topLevelEl.addEventListener("change", function () {

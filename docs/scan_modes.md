@@ -15,8 +15,8 @@ This page explains how scanner modes affect findings selection, LLM review, and 
 
 ## Output Layout
 
-- `--output-layout flat` (default): writes versioned artifacts directly under `reports/`.
-- `--output-layout run-folder`: writes versioned artifacts under `reports/runs/<project>__<timestamp>/`.
+- `--output-layout run-folder` (default): writes versioned artifacts under `reports/runs/<project>__<timestamp>/`.
+- `--output-layout flat`: writes versioned artifacts directly under `reports/`.
 - In both modes, compatibility pointers remain in `reports/`:
   - `findings.json`, `nfr_digest.md`, `nfr.sarif`, `fallback_findings.json`
   - Safe-AI pointers when generated: `safe_ai_risk.json`, `safe_ai_risk_digest.md`, `safe_ai_risk.sarif`
@@ -44,6 +44,11 @@ This page explains how scanner modes affect findings selection, LLM review, and 
   - `review_status=regex_only`
   - `llm_transport.error_kind=skipped`
 - These are retained for manual triage and UI filtering.
+
+### Optional Patch Verification Pass
+- `--patch-verify-pass` adds a second independent LLM pass that validates generated patch correctness against snippet/rule context.
+- Off by default to reduce token usage.
+- If verifier rejects patch semantics, patch is downgraded to `unknown` and reason is recorded in finding notes.
 
 Important:
 - If you later want LLM-reviewed results for the same code snapshot, run a fresh scan.

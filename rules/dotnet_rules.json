@@ -28,7 +28,7 @@
     "top_level_category": "dotnet",
     "sub_category": "concurrency",
     "severity": "S2",
-    "pattern": "\\.(ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync|AnyAsync|CountAsync|LongCountAsync|SumAsync|AverageAsync|MinAsync|MaxAsync|FirstAsync|SingleAsync|FindAsync|ExecuteUpdateAsync|ExecuteDeleteAsync)\\s*\\((?![^)]*\\b(CancellationToken|ct|stoppingToken|token|cancellationToken|requestAborted)\\b)[^)]*\\)",
+    "pattern": "(?is)\\b(?:AnyAsync|ToListAsync|FirstAsync|FirstOrDefaultAsync|SingleAsync|SingleOrDefaultAsync|CountAsync|LongCountAsync|SumAsync|AverageAsync|MinAsync|MaxAsync|FindAsync|ExecuteUpdateAsync|ExecuteDeleteAsync)\\s*\\((?![^;]{0,800}\\b(?:cancellationToken|ct|token|requestAborted|HttpContext\\.RequestAborted|stoppingToken)\\b)[^;]{0,800}\\)\\s*(?:\\.ConfigureAwait\\s*\\(\\s*false\\s*\\))?\\s*;",
     "include_globs": [
       "*.cs"
     ],
@@ -45,13 +45,13 @@
   },
   {
     "id": "NFR-DOTNET-003",
-    "title": "Blocking wait in async-capable code",
+    "title": "Blocking wait primitives in async-capable code",
     "category": "performance",
     "top_level_category": "dotnet",
     "sub_category": "concurrency",
     "severity": "S2",
-    "confidence_hint": 0.6,
-    "pattern": "(\\.GetAwaiter\\s*\\(\\)\\.GetResult\\s*\\(\\)|\\.Wait\\s*\\(|\\bTask\\.Wait(All|Any)\\s*\\(|\\b[A-Za-z_][A-Za-z0-9_]*Async\\s*\\([^)]*\\)\\s*\\.\\s*Result\\b)",
+    "confidence_hint": 0.75,
+    "pattern": "(\\.GetAwaiter\\s*\\(\\)\\.GetResult\\s*\\(\\)|\\.Wait\\s*\\(|\\bTask\\.Wait(All|Any)\\s*\\()",
     "ignore_comment_lines": true,
     "include_globs": [
       "*.cs"
@@ -63,7 +63,30 @@
       "**/*.designer.cs",
       "**/Migrations/**"
     ],
-    "rationale": "Blocking waits can cause deadlocks and thread pool starvation. Regex heuristics may produce false positives; treat as review unless confirmed in request-path code.",
+    "rationale": "Blocking wait primitives (.Wait / GetAwaiter().GetResult / Task.Wait*) can cause deadlocks and thread pool starvation. High-signal even with regex; still review unless confirmed in hot paths.",
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-DOTNET-003B",
+    "title": "Task.Result on async call result",
+    "category": "performance",
+    "top_level_category": "dotnet",
+    "sub_category": "concurrency",
+    "severity": "S3",
+    "confidence_hint": 0.45,
+    "pattern": "(?is)\\b[A-Za-z_][A-Za-z0-9_]*Async\\s*\\([\\s\\S]{0,600}\\)\\s*\\.\\s*Result\\b",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*.g.cs",
+      "**/*.designer.cs",
+      "**/Migrations/**"
+    ],
+    "rationale": "Accessing .Result on an async call result can block threads and deadlock in some contexts. Regex is heuristic (multi-line/lambda-safe); treat as review and confirm callsite.",
     "enforcement_level": "review"
   },
   {
@@ -257,6 +280,7 @@
     "severity": "S2",
     "confidence_hint": 0.75,
     "pattern": "\\bCancellationToken\\.None\\b",
+    "ignore_comment_lines": true,
     "include_globs": [
       "*.cs"
     ],
@@ -370,12 +394,12 @@
   },
   {
     "id": "NFR-DOTNET-019",
-    "title": "Parallel.ForEachAsync without token",
+    "title": "Parallel.ForEachAsync without cancellation token",
     "category": "reliability",
     "top_level_category": "dotnet",
     "sub_category": "concurrency",
     "severity": "S2",
-    "pattern": "\\bParallel\\.ForEachAsync\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
+    "pattern": "(?is)\\bParallel\\.ForEachAsync\\s*\\((?![\\s\\S]{0,900}\\b(?:cancellationToken|token|ct|requestAborted|HttpContext\\.RequestAborted|stoppingToken|CancellationToken)\\b)(?![\\s\\S]{0,900}\\bParallelOptions\\b)[\\s\\S]{0,900}\\)\\s*(?:\\.ConfigureAwait\\s*\\(\\s*false\\s*\\))?\\s*;?",
     "include_globs": [
       "*.cs"
     ],
@@ -383,8 +407,8 @@
       "**/bin/**",
       "**/obj/**"
     ],
-    "rationale": "Parallel loops should be cancellable to avoid runaway background work.",
-    "confidence_hint": 0.7,
+    "rationale": "Parallel.ForEachAsync should be cancellable. Regex checks within the same statement (multi-line/lambda-safe) for a CancellationToken-like argument or ParallelOptions; otherwise flags for review.",
+    "confidence_hint": 0.72,
     "enforcement_level": "review"
   },
   {
@@ -428,6 +452,29 @@
       "**/*.designer.cs"
     ],
     "rationale": "Manual sync JSON serialization can add CPU/allocations in hot paths. In API/controller paths prefer returning objects and framework serialization; keep manual serialization for targeted hashing/cache/log use-cases.",
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-DOTNET-022",
+    "title": "Async call result not awaited or returned",
+    "category": "reliability",
+    "top_level_category": "dotnet",
+    "sub_category": "concurrency",
+    "severity": "S2",
+    "pattern": "(?m)^\\s*(?!await\\b)(?!return\\b)(?!_\\s*=)(?!var\\s+_\\s*=)(?!//)[A-Za-z_][A-Za-z0-9_\\.<>]*Async\\s*\\([^;\\n]*\\)\\s*(?:\\.ConfigureAwait\\s*\\(\\s*false\\s*\\))?\\s*;",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs",
+      "**/*.g.cs",
+      "**/*.designer.cs"
+    ],
+    "rationale": "Standalone async invocations that are neither awaited nor returned can hide failures or complete later than expected. This rule catches likely fire-and-forget mistakes such as calling AddRangeAsync(...) without await/return.",
+    "confidence_hint": 0.7,
     "enforcement_level": "review"
   }
 ]

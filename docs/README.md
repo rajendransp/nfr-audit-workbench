@@ -6,17 +6,17 @@ This folder documents the current regex rule packs used by `nfr_scan.py`.
 
 | Pack | Rule Count | Top Level |
 | --- | ---:| --- |
-| `rules/dotnet_rules.json` | 21 | `dotnet` |
+| `rules/dotnet_rules.json` | 23 | `dotnet` |
 | `rules/frontend_rules.json` | 17 | `front_end` |
 | `rules/razor_rules.json` | 6 | `front_end` |
-| `rules/rest_api_rules.json` | 17 | `rest_api` |
-| `rules/all_rules.json` | 61 | mixed |
+| `rules/rest_api_rules.json` | 18 | `rest_api` |
+| `rules/all_rules.json` | 64 | mixed |
 | `rules/safe_ai_rules.json` | 10 | `safe_ai` |
 
 ## Category Distribution
 
 ### Dotnet (`rules/dotnet_rules.json`)
-- `concurrency`: 10
+- `concurrency`: 12
 - `loading`: 6
 - `performance`: 5
 
@@ -31,9 +31,9 @@ This folder documents the current regex rule packs used by `nfr_scan.py`.
 - `concurrency`: 1
 
 ### REST API (`rules/rest_api_rules.json`)
-- `loading`: 10
+- `loading`: 9
 - `concurrency`: 4
-- `performance`: 3
+- `performance`: 4
 - `authentication`: 1
 
 ## Rule Metadata Fields
@@ -66,6 +66,7 @@ Safe-AI specific:
 - `concurrency`, `performance`, `loading`
 - In CI hard-fail mode, prioritize `enforcement_level=hard_fail` for API rules.
 - `--max-llm 0` keeps findings in final output as `regex_only` for manual triage.
+- UI supports validation-level triage (`Confirmed Issue` vs `False Positive / Non-Issue`) for reviewed findings.
 
 ## Safe-AI Outputs
 
@@ -107,4 +108,4 @@ See `rules_catalog.md`.
 ## Scan Behavior Reference
 
 See `scan_modes.md` for full vs incremental vs resume behavior, `--max-llm 0` regex-only output semantics, and Safe-AI scan modes.
-Use `--output-layout run-folder` to group per-run artifacts under `reports/runs/<project>__<timestamp>/`.
+Run-folder output is the default layout (`reports/runs/<project>__<timestamp>/`); use `--output-layout flat` for legacy placement.
