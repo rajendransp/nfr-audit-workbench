@@ -5,8 +5,8 @@
     "category": "reliability",
     "top_level_category": "front_end",
     "sub_category": "concurrency",
-    "severity": "S2",
-    "pattern": "\\bfetch\\s*\\(\\s*[^,\\n\\)]*(?:,\\s*\\{(?![^}]*\\bsignal\\b)[^}]*\\})?\\s*\\)",
+    "severity": "S3",
+    "pattern": "\\bfetch\\s*\\(\\s*[^,\\n\\)]*(?:,\\s*\\{(?![^}]*\\bsignal\\b)[^}]*\\})?\\s*\\)(?![\\s\\S]{0,120}\\b(useQuery|useSWR|swr|axiosInstance)\\b)",
     "ignore_comment_lines": true,
     "include_globs": [
       "*.js",
@@ -27,8 +27,9 @@
       "**/Scripts/ej2/**",
       "**/jquery*/**"
     ],
-    "rationale": "In-flight requests should be cancellable during navigation/unmount to avoid stale updates and wasted network work.",
-    "confidence_hint": 0.7
+    "rationale": "AbortSignal is recommended for fetches that can outlive a component. Wrapper-based data layers may handle cancellation differently; treat as review.",
+    "confidence_hint": 0.5,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-002",
@@ -59,7 +60,8 @@
       "**/jquery*/**"
     ],
     "rationale": "Client calls without timeout can hang and consume resources during upstream degradation.",
-    "confidence_hint": 0.6
+    "confidence_hint": 0.6,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-003",
@@ -68,7 +70,7 @@
     "top_level_category": "front_end",
     "sub_category": "concurrency",
     "severity": "S2",
-    "pattern": "\\buseEffect\\s*\\(\\s*\\(\\s*=>[\\s\\S]{0,260}\\bsetInterval\\s*\\((?![\\s\\S]{0,260}\\bclearInterval\\s*\\()",
+    "pattern": "\\buseEffect\\s*\\(\\s*\\(\\s*=>[\\s\\S]{0,600}\\bsetInterval\\s*\\((?![\\s\\S]{0,600}\\bclearInterval\\s*\\()",
     "ignore_comment_lines": true,
     "include_globs": [
       "*.js",
@@ -90,7 +92,8 @@
       "**/jquery*/**"
     ],
     "rationale": "Intervals that survive component teardown cause memory leaks and repeated background execution.",
-    "confidence_hint": 0.55
+    "confidence_hint": 0.6,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-004",
@@ -99,7 +102,7 @@
     "top_level_category": "front_end",
     "sub_category": "concurrency",
     "severity": "S2",
-    "pattern": "\\.then\\s*\\(\\s*[^,\\)]{1,200}\\s*\\)(?!\\s*,)(?!\\s*\\.catch\\s*\\()(?!\\s*\\.finally\\s*\\()",
+    "pattern": "\\.then\\s*\\(\\s*[^,\\)]{1,240}\\s*\\)(?!\\s*,)(?![\\s\\S]{0,120}\\.catch\\s*\\()(?![\\s\\S]{0,120}\\.finally\\s*\\()",
     "ignore_comment_lines": true,
     "include_globs": [
       "*.js",
@@ -121,17 +124,18 @@
       "**/jquery*/**"
     ],
     "rationale": "Unhandled async errors frequently degrade UX and mask production incidents.",
-    "confidence_hint": 0.5
+    "confidence_hint": 0.55,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-005A",
-    "title": "Risky innerHTML/dangerouslySetInnerHTML source",
+    "title": "Risky innerHTML/dangerouslySetInnerHTML from dynamic source",
     "category": "reliability",
     "top_level_category": "front_end",
     "sub_category": "loading",
     "severity": "S1",
     "confidence_hint": 0.9,
-    "pattern": "(dangerouslySetInnerHTML\\s*=\\s*\\{\\s*\\{\\s*__html\\s*:\\s*[^\\}]{0,220}(marked\\(|editor\\.|response\\.|data\\.|query|location\\.|localStorage|sessionStorage|innerText|value\\b)|\\b[A-Za-z_$][A-Za-z0-9_$]*\\.innerHTML\\s*=\\s*[^;\\n]{0,220}(marked\\(|editor\\.|response\\.|data\\.|query|location\\.|localStorage|sessionStorage|innerText|value\\b))",
+    "pattern": "(dangerouslySetInnerHTML\\s*=\\s*\\{\\s*\\{\\s*__html\\s*:\\s*(?![\"\\'`])[\\s\\S]{1,220}\\}\\s*\\}|\\b[A-Za-z_$][A-Za-z0-9_$]*\\.innerHTML\\s*=\\s*(?!\\s*[\"\\'`])[^;\\n]{1,220})",
     "ignore_comment_lines": true,
     "include_globs": [
       "*.js",
@@ -154,17 +158,18 @@
       "**/Scripts/ej2/**",
       "**/jquery*/**"
     ],
-    "rationale": "Raw HTML rendering fed by dynamic content sources is high-risk and should be sanitized or replaced with safe rendering."
+    "rationale": "Dynamic content assigned to raw HTML sinks is high-risk (XSS/injection). Sanitize or use safe rendering APIs.",
+    "enforcement_level": "hard_fail"
   },
   {
     "id": "NFR-FE-005B",
-    "title": "Generic innerHTML/dangerouslySetInnerHTML usage",
+    "title": "innerHTML/dangerouslySetInnerHTML with static literal (review)",
     "category": "reliability",
     "top_level_category": "front_end",
     "sub_category": "loading",
     "severity": "S3",
-    "confidence_hint": 0.55,
-    "pattern": "\\bdangerouslySetInnerHTML\\b|\\b[A-Za-z_$][A-Za-z0-9_$]*\\.innerHTML\\s*=",
+    "confidence_hint": 0.6,
+    "pattern": "(dangerouslySetInnerHTML\\s*=\\s*\\{\\s*\\{\\s*__html\\s*:\\s*[\"\\'`][\\s\\S]{0,220}[\"\\'`]\\s*\\}\\s*\\}|\\b[A-Za-z_$][A-Za-z0-9_$]*\\.innerHTML\\s*=\\s*[\"\\'`][^;\\n]{0,220}[\"\\'`])",
     "ignore_comment_lines": true,
     "include_globs": [
       "*.js",
@@ -187,7 +192,8 @@
       "**/Scripts/ej2/**",
       "**/jquery*/**"
     ],
-    "rationale": "Generic raw HTML assignment requires review; may be acceptable for constant trusted templates but should be validated."
+    "rationale": "Raw HTML assignment with literals may be acceptable but should be reviewed for trust boundaries and maintainability.",
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-006",
@@ -215,15 +221,16 @@
       "**/jquery*/**"
     ],
     "rationale": "Unstable keys increase rerenders and can corrupt UI state mapping.",
-    "confidence_hint": 0.85
+    "confidence_hint": 0.85,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-007",
-    "title": "Large synchronous loop in render path",
+    "title": "Potential heavy mapping in render path (review)",
     "category": "performance",
     "top_level_category": "front_end",
     "sub_category": "performance",
-    "severity": "S2",
+    "severity": "S3",
     "pattern": "\\breturn\\s*\\([\\s\\S]{0,520}\\b[A-Za-z_][A-Za-z0-9_]*\\s*\\.\\s*map\\s*\\(",
     "include_globs": [
       "*.jsx",
@@ -242,8 +249,9 @@
       "**/Scripts/ej2/**",
       "**/jquery*/**"
     ],
-    "rationale": "Expensive synchronous work in render paths harms frame time and interaction latency.",
-    "confidence_hint": 0.35
+    "rationale": "Mapping in render can be fine for small lists; review for large datasets and consider memoization/virtualization.",
+    "confidence_hint": 0.25,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-008",
@@ -274,7 +282,8 @@
       "**/jquery*/**"
     ],
     "rationale": "Eager route loading inflates initial bundle and slows first contentful render.",
-    "confidence_hint": 0.45
+    "confidence_hint": 0.45,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-009",
@@ -305,7 +314,8 @@
       "**/jquery*/**"
     ],
     "rationale": "Non-lazy images increase network contention and render blocking under limited bandwidth.",
-    "confidence_hint": 0.75
+    "confidence_hint": 0.75,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-010",
@@ -335,7 +345,8 @@
       "**/jquery*/**"
     ],
     "rationale": "High-frequency handlers without shaping can overload API and client runtime.",
-    "confidence_hint": 0.5
+    "confidence_hint": 0.5,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-011",
@@ -368,7 +379,8 @@
       "**/jquery*/**"
     ],
     "rationale": "Excessive client logging increases noise and can affect render performance in low-end devices.",
-    "confidence_hint": 0.95
+    "confidence_hint": 0.95,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-012",
@@ -399,7 +411,8 @@
       "**/jquery*/**"
     ],
     "rationale": "Potential sync storage hotspot; often low-impact and context-dependent. Treat as low-priority warning.",
-    "confidence_hint": 0.25
+    "confidence_hint": 0.25,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-013",
@@ -408,8 +421,8 @@
     "top_level_category": "front_end",
     "sub_category": "loading",
     "severity": "S3",
-    "confidence_hint": 0.55,
-    "pattern": "\\breturn\\b[\\s\\S]{0,360}\\b[A-Za-z0-9_]+\\.(map|forEach)\\s*\\(",
+    "confidence_hint": 0.35,
+    "pattern": "\\breturn\\b[\\s\\S]{0,420}\\b(items|rows|results|records|data)\\b\\s*\\.map\\s*\\((?![\\s\\S]{0,220}\\b(VirtualizedList|react-window|react-virtualized|Virtualize)\\b)",
     "ignore_comment_lines": true,
     "include_globs": [
       "*.jsx",
@@ -428,7 +441,8 @@
       "**/Scripts/ej2/**",
       "**/jquery*/**"
     ],
-    "rationale": "Large list rendering without virtualization can degrade frame time and interaction latency."
+    "rationale": "Large list rendering may need virtualization. Heuristic triggers on common large-collection identifiers; treat as review.",
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-014",
@@ -436,9 +450,9 @@
     "category": "reliability",
     "top_level_category": "front_end",
     "sub_category": "concurrency",
-    "severity": "S2",
-    "confidence_hint": 0.6,
-    "pattern": "\\buseEffect\\s*\\(\\s*\\(\\s*\\)\\s*=>[\\s\\S]{0,280}\\b(fetch|axios\\.(get|post|put|delete|request))\\b[\\s\\S]{0,280}\\)\\s*(?!,\\s*\\[)",
+    "severity": "S3",
+    "confidence_hint": 0.55,
+    "pattern": "\\buseEffect\\s*\\(\\s*\\(\\s*\\)\\s*=>[\\s\\S]{0,320}\\b(fetch|axios\\.(get|post|put|delete|request))\\b[\\s\\S]{0,320}\\)\\s*(?!,\\s*\\[)(?![\\s\\S]{0,120}eslint-disable-next-line\\s+react-hooks/exhaustive-deps)",
     "ignore_comment_lines": true,
     "include_globs": [
       "*.js",
@@ -459,7 +473,8 @@
       "**/Scripts/ej2/**",
       "**/jquery*/**"
     ],
-    "rationale": "Data-fetch effects without dependency arrays can re-run unexpectedly and amplify network load."
+    "rationale": "Effects that fetch data without a dependency array can re-run unexpectedly. Treat as review; allow explicit lint suppression where justified.",
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-015",
@@ -490,7 +505,8 @@
       "**/Scripts/ej2/**",
       "**/jquery*/**"
     ],
-    "rationale": "Event listeners created in effects should be removed on cleanup to avoid leaks and duplicated handlers."
+    "rationale": "Event listeners created in effects should be removed on cleanup to avoid leaks and duplicated handlers.",
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-FE-016",
@@ -521,6 +537,7 @@
       "**/Scripts/ej2/**",
       "**/jquery*/**"
     ],
-    "rationale": "Broad/wildcard imports and moment locale-all import can inflate bundle size and hurt load performance."
+    "rationale": "Broad/wildcard imports and moment locale-all import can inflate bundle size and hurt load performance.",
+    "enforcement_level": "review"
   }
 ]

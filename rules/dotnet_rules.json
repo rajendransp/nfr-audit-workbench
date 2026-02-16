@@ -6,10 +6,20 @@
     "top_level_category": "dotnet",
     "sub_category": "concurrency",
     "severity": "S2",
-    "pattern": "\\b(HttpClient|_httpClient|client)\\.(GetAsync|PostAsync|PutAsync|DeleteAsync|SendAsync)\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**", "**/Migrations/**"],
-    "rationale": "Network calls should propagate cancellation to prevent wasted compute after client disconnects."
+    "pattern": "\\b(HttpClient|_httpClient|client)\\.(GetAsync|PostAsync|PutAsync|DeleteAsync|SendAsync|GetFromJsonAsync|PostAsJsonAsync|PutAsJsonAsync)\\s*\\((?![^)]*\\b(CancellationToken|ct|stoppingToken|token|cancellationToken|requestAborted)\\b)[^)]*\\)",
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/Migrations/**",
+      "**/*.g.cs",
+      "**/*.designer.cs"
+    ],
+    "rationale": "HTTP calls in request/worker flows should propagate cancellation (RequestAborted/stoppingToken) to avoid wasted work after disconnects and to enable graceful shutdown.",
+    "confidence_hint": 0.75,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-002",
@@ -18,10 +28,20 @@
     "top_level_category": "dotnet",
     "sub_category": "concurrency",
     "severity": "S2",
-    "pattern": "\\.(ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync|AnyAsync|CountAsync|ExecuteUpdateAsync|ExecuteDeleteAsync)\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**", "**/Migrations/**"],
-    "rationale": "DB calls should be cancellable to avoid unnecessary work under load."
+    "pattern": "\\.(ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync|AnyAsync|CountAsync|LongCountAsync|SumAsync|AverageAsync|MinAsync|MaxAsync|FirstAsync|SingleAsync|FindAsync|ExecuteUpdateAsync|ExecuteDeleteAsync)\\s*\\((?![^)]*\\b(CancellationToken|ct|stoppingToken|token|cancellationToken|requestAborted)\\b)[^)]*\\)",
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/Migrations/**",
+      "**/*.g.cs",
+      "**/*.designer.cs"
+    ],
+    "rationale": "Async EF Core calls should pass CancellationToken to stop DB work when a request is aborted or a worker is shutting down.",
+    "confidence_hint": 0.75,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-003",
@@ -29,13 +49,22 @@
     "category": "performance",
     "top_level_category": "dotnet",
     "sub_category": "concurrency",
-    "severity": "S1",
-    "confidence_hint": 0.5,
-    "pattern": "(\\b[A-Za-z_][A-Za-z0-9_]*(Task|task|ValueTask|valuetask)\\s*\\.\\s*Result\\b|\\b[A-Za-z_][A-Za-z0-9_]*Async\\s*\\([^)]*\\)\\s*\\.\\s*Result\\b|\\.Wait\\s*\\(|GetAwaiter\\s*\\(\\)\\.GetResult\\s*\\(|\\bTask\\.Wait(All|Any)\\s*\\()",
+    "severity": "S2",
+    "confidence_hint": 0.6,
+    "pattern": "(\\.GetAwaiter\\s*\\(\\)\\.GetResult\\s*\\(\\)|\\.Wait\\s*\\(|\\bTask\\.Wait(All|Any)\\s*\\(|\\b[A-Za-z_][A-Za-z0-9_]*Async\\s*\\([^)]*\\)\\s*\\.\\s*Result\\b)",
     "ignore_comment_lines": true,
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**"],
-    "rationale": "Blocking waits can cause deadlocks and thread pool starvation. Pattern intentionally targets task-like .Result usage to avoid domain Result-property false positives."
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*.g.cs",
+      "**/*.designer.cs",
+      "**/Migrations/**"
+    ],
+    "rationale": "Blocking waits can cause deadlocks and thread pool starvation. Regex heuristics may produce false positives; treat as review unless confirmed in request-path code.",
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-004",
@@ -46,9 +75,15 @@
     "severity": "S2",
     "confidence_hint": 0.95,
     "pattern": "\\bThread\\.Sleep\\s*\\(",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**"],
-    "rationale": "Sleep blocks threads and harms throughput; prefer async delay with cancellation."
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**"
+    ],
+    "rationale": "Sleep blocks threads and harms throughput; prefer async delay with cancellation.",
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-005",
@@ -57,11 +92,22 @@
     "top_level_category": "dotnet",
     "sub_category": "loading",
     "severity": "S2",
-    "confidence_hint": 0.9,
+    "confidence_hint": 0.85,
     "pattern": "\\bnew\\s+HttpClient\\s*\\(",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**", "**/*Tests*.cs", "**/Program.cs"],
-    "rationale": "Repeated HttpClient allocation can cause socket exhaustion."
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs",
+      "**/Program.cs",
+      "**/*HttpClientFactory*.cs",
+      "**/*HttpClientBuilder*.cs",
+      "**/Startup.cs"
+    ],
+    "rationale": "Prefer IHttpClientFactory/typed clients; repeated HttpClient allocation can cause socket exhaustion. Excludes common factory/builder/bootstrap locations.",
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-006",
@@ -71,9 +117,17 @@
     "sub_category": "concurrency",
     "severity": "S2",
     "pattern": "\\.ExecuteSqlRaw(Async)?\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**", "**/Migrations/**"],
-    "rationale": "Raw SQL operations should honor cancellation in services and APIs."
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/Migrations/**"
+    ],
+    "rationale": "Raw SQL operations should honor cancellation in services and APIs.",
+    "confidence_hint": 0.7,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-007",
@@ -83,9 +137,19 @@
     "sub_category": "loading",
     "severity": "S3",
     "pattern": "\\b(CommandTimeout|SetCommandTimeout)\\b[^\\n]*\\b([3-9][0-9]{2,}|[1-9][0-9]{3,})\\b",
-    "include_globs": ["*.cs", "*.json", "*.config", "appsettings*.json"],
-    "exclude_globs": ["**/bin/**", "**/obj/**"],
-    "rationale": "Very high timeouts can mask upstream latency and propagate incidents."
+    "include_globs": [
+      "*.cs",
+      "*.json",
+      "*.config",
+      "appsettings*.json"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**"
+    ],
+    "rationale": "Very high timeouts can mask upstream latency and propagate incidents.",
+    "confidence_hint": 0.5,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-008",
@@ -95,9 +159,16 @@
     "sub_category": "concurrency",
     "severity": "S2",
     "pattern": "\\bTask\\.Delay\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**"],
-    "rationale": "Delays in workers and retries should be cancellable for graceful shutdown."
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**"
+    ],
+    "rationale": "Delays in workers and retries should be cancellable for graceful shutdown.",
+    "confidence_hint": 0.7,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-009",
@@ -106,10 +177,17 @@
     "top_level_category": "dotnet",
     "sub_category": "concurrency",
     "severity": "S2",
-    "pattern": "\\bParallel\\.ForEach\\s*\\(",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**"],
-    "rationale": "Unbounded parallelism can overwhelm CPU, thread pool, and downstream dependencies."
+    "pattern": "\\bParallel\\.ForEach\\s*\\((?![\\s\\S]{0,160}ParallelOptions)[\\s\\S]{0,60}",
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**"
+    ],
+    "rationale": "Unbounded Parallel.ForEach can overwhelm CPU/threadpool and downstream services. This rule focuses on calls that do not appear to pass ParallelOptions.",
+    "confidence_hint": 0.6,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-010",
@@ -119,9 +197,16 @@
     "sub_category": "loading",
     "severity": "S3",
     "pattern": "\\b(for(each)?|while)\\b[\\s\\S]{0,400}\\.(FirstOrDefaultAsync|SingleOrDefaultAsync|ToListAsync|AnyAsync|CountAsync)\\s*\\(",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**"],
-    "rationale": "Repeated DB calls in loops can create N+1 latency and load issues."
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**"
+    ],
+    "rationale": "Repeated DB calls in loops can create N+1 latency and load issues.",
+    "confidence_hint": 0.5,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-011",
@@ -132,21 +217,36 @@
     "severity": "S1",
     "confidence_hint": 0.95,
     "pattern": "\\basync\\s+void\\s+[A-Za-z_][A-Za-z0-9_]*\\s*\\(",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**", "**/*Designer.cs"],
-    "rationale": "async void methods cannot be awaited and exceptions bypass normal task error handling."
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Designer.cs"
+    ],
+    "rationale": "async void methods cannot be awaited and exceptions bypass normal task error handling.",
+    "enforcement_level": "hard_fail"
   },
   {
     "id": "NFR-DOTNET-012",
-    "title": "Fire-and-forget Task.Run",
+    "title": "Fire-and-forget background work pattern",
     "category": "reliability",
     "top_level_category": "dotnet",
     "sub_category": "concurrency",
     "severity": "S2",
-    "pattern": "(^|\\s)_\\s*=\\s*Task\\.Run\\s*\\(",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**", "**/*Tests*.cs"],
-    "rationale": "Detached tasks can hide failures and outlive request scope resources."
+    "pattern": "(?m)(^|\\s)(?:_|\\w+)?\\s*=\\s*Task\\.Run\\s*\\(|(?<!await\\s)Task\\.Run\\s*\\(|\\bTask\\.Factory\\.StartNew\\s*\\(|\\bnew\\s+Thread\\s*\\(",
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Unobserved background work (Task.Run/StartNew/new Thread) can hide failures and outlive request-scoped resources. Review whether work is awaited/observed and cancellation is propagated.",
+    "confidence_hint": 0.55,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-013",
@@ -157,9 +257,16 @@
     "severity": "S2",
     "confidence_hint": 0.75,
     "pattern": "\\bCancellationToken\\.None\\b",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**", "**/*Tests*.cs"],
-    "rationale": "Hardcoding non-cancellable operations can block graceful shutdown and wasted work cancellation."
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Hardcoding non-cancellable operations can block graceful shutdown and wasted work cancellation.",
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-014",
@@ -168,10 +275,17 @@
     "top_level_category": "dotnet",
     "sub_category": "loading",
     "severity": "S2",
-    "pattern": "\\bcatch\\s*\\([^\\)]*\\)\\s*\\{\\s*\\}",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**"],
-    "rationale": "Swallowed exceptions hide systemic failures that surface as intermittent load incidents."
+    "pattern": "\\bcatch\\s*\\((?![^\\)]*OperationCanceledException)[^\\)]*\\)\\s*\\{\\s*\\}",
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**"
+    ],
+    "rationale": "Empty catch blocks swallow failures; allow empty catch only for OperationCanceledException when intentionally ignored.",
+    "confidence_hint": 0.8,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-015",
@@ -181,9 +295,17 @@
     "sub_category": "performance",
     "severity": "S2",
     "pattern": "\\b(File\\.ReadAllText|File\\.ReadAllBytes|File\\.OpenRead)\\s*\\(",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**", "**/*Tests*.cs"],
-    "rationale": "Sync file I/O can block thread pool threads and reduce throughput."
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Sync file I/O can block thread pool threads and reduce throughput.",
+    "confidence_hint": 0.7,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-016",
@@ -193,9 +315,16 @@
     "sub_category": "performance",
     "severity": "S3",
     "pattern": "\\.ToList\\s*\\(\\s*\\)\\s*\\.(Where|Select|OrderBy|GroupBy)\\s*\\(",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**"],
-    "rationale": "Materializing early increases allocations and memory pressure."
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**"
+    ],
+    "rationale": "Materializing early increases allocations and memory pressure.",
+    "confidence_hint": 0.5,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-017",
@@ -206,9 +335,16 @@
     "severity": "S3",
     "confidence_hint": 0.4,
     "pattern": "\\b(_db\\w*|dbContext|context)\\b[\\s\\S]{0,240}\\.(ToArrayAsync|ToListAsync|ToArray|ToList)\\s*\\(",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**", "**/*Tests*.cs"],
-    "rationale": "Large materializations can cause memory spikes and GC churn under load."
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Large materializations can cause memory spikes and GC churn under load.",
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-018",
@@ -216,11 +352,21 @@
     "category": "scalability",
     "top_level_category": "dotnet",
     "sub_category": "loading",
-    "severity": "S2",
+    "severity": "S3",
     "pattern": "\\b(IQueryable<|DbSet<)[\\s\\S]{0,300}\\.(ToListAsync|ToList)\\s*\\(",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**", "**/Migrations/**"],
-    "rationale": "Unbounded result sets are a common root cause of load amplification."
+    "include_globs": [
+      "**/*Controller*.cs",
+      "**/*Endpoint*.cs",
+      "**/*Endpoints*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/Migrations/**"
+    ],
+    "rationale": "Potential unbounded query materialization in API/endpoint code. Prefer pagination (Skip/Take/page) or bounded filters. Regex-only: treat as review.",
+    "confidence_hint": 0.35,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-019",
@@ -230,9 +376,16 @@
     "sub_category": "concurrency",
     "severity": "S2",
     "pattern": "\\bParallel\\.ForEachAsync\\s*\\((?![^)]*\\bCancellationToken\\b)(?![^)]*\\bct\\b)(?![^)]*\\bstoppingToken\\b)[^)]*\\)",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**"],
-    "rationale": "Parallel loops should be cancellable to avoid runaway background work."
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**"
+    ],
+    "rationale": "Parallel loops should be cancellable to avoid runaway background work.",
+    "confidence_hint": 0.7,
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-DOTNET-020",
@@ -240,10 +393,41 @@
     "category": "performance",
     "top_level_category": "dotnet",
     "sub_category": "performance",
+    "severity": "S4",
+    "pattern": "\\b_db\\w*\\.[A-Za-z0-9_]+\\b(?![\\s\\S]{0,160}\\b(AsNoTracking|AsTracking)\\s*\\()(?![\\s\\S]{0,160}\\bSelect\\s*\\()([\\s\\S]{0,200})\\.(ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync|AnyAsync|CountAsync)\\s*\\(",
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/Migrations/**"
+    ],
+    "rationale": "AsNoTracking can reduce change-tracker overhead for large read-only entity queries. This is contextual (writes/projections/tests); treat as low-priority review.",
+    "confidence_hint": 0.35,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-DOTNET-021",
+    "title": "Synchronous JSON serialization in hot path (review)",
+    "category": "performance",
+    "top_level_category": "dotnet",
+    "sub_category": "performance",
     "severity": "S3",
-    "pattern": "\\b_db\\w*\\.[A-Za-z0-9_]+\\b(?![\\s\\S]{0,120}AsNoTracking\\s*\\()([\\s\\S]{0,160})\\.(ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync|AnyAsync|CountAsync)\\s*\\(",
-    "include_globs": ["*.cs"],
-    "exclude_globs": ["**/bin/**", "**/obj/**", "**/Migrations/**"],
-    "rationale": "Tracked entities in read-only flows increase memory usage and change-tracker overhead."
+    "confidence_hint": 0.55,
+    "pattern": "\\b(JsonConvert\\.SerializeObject|JsonConvert\\.DeserializeObject(?:<[^>]+>)?|System\\.Text\\.Json\\.JsonSerializer\\.(Serialize|Deserialize))\\s*\\(",
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs",
+      "**/Migrations/**",
+      "**/*.g.cs",
+      "**/*.designer.cs"
+    ],
+    "rationale": "Manual sync JSON serialization can add CPU/allocations in hot paths. In API/controller paths prefer returning objects and framework serialization; keep manual serialization for targeted hashing/cache/log use-cases.",
+    "enforcement_level": "review"
   }
 ]

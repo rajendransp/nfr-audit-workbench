@@ -5,9 +5,9 @@
     "category": "performance",
     "top_level_category": "front_end",
     "sub_category": "loading",
-    "severity": "S3",
-    "confidence_hint": 0.5,
-    "pattern": "@foreach\\s*\\([^\\)]*\\)\\s*\\{(?![\\s\\S]{0,320}<Virtualize\\b)",
+    "severity": "S4",
+    "confidence_hint": 0.35,
+    "pattern": "@foreach\\s*\\(\\s*var\\s+\\w+\\s+in\\s+(items|rows|results|records|logs|data)\\b[^\\)]*\\)\\s*\\{(?![\\s\\S]{0,420}<Virtualize\\b)",
     "ignore_comment_lines": true,
     "include_globs": [
       "*.razor"
@@ -22,7 +22,8 @@
       "**/Scripts/ej2/**",
       "**/jquery*/**"
     ],
-    "rationale": "Large item rendering in Razor without virtualization can degrade frame time and page responsiveness."
+    "rationale": "Virtualization is recommended for large collections; heuristic triggers only when loop source name suggests a potentially large dataset. Review.",
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-RAZOR-002",
@@ -30,8 +31,8 @@
     "category": "performance",
     "top_level_category": "front_end",
     "sub_category": "loading",
-    "severity": "S3",
-    "confidence_hint": 0.55,
+    "severity": "S4",
+    "confidence_hint": 0.35,
     "pattern": "@on(input|keyup)\\s*=\\s*\"[^\"]+\"(?![\\s\\S]{0,180}(Debounce|Throttle|debounce|throttle))",
     "ignore_comment_lines": true,
     "include_globs": [
@@ -47,7 +48,8 @@
       "**/Scripts/ej2/**",
       "**/jquery*/**"
     ],
-    "rationale": "High-frequency UI handlers without debounce/throttle can overload rendering and backend requests."
+    "rationale": "@oninput/@onkeyup can fire frequently; consider debouncing only when handler triggers expensive work (server calls, filtering, heavy state updates). Review.",
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-RAZOR-003",
@@ -74,7 +76,8 @@
       "**/Scripts/ej2/**",
       "**/jquery*/**"
     ],
-    "rationale": "Repeated JS interop calls inside loops can create severe client/server latency and contention."
+    "rationale": "Repeated JS interop calls inside loops can create severe client/server latency and contention.",
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-RAZOR-004",
@@ -102,7 +105,8 @@
       "**/Scripts/ej2/**",
       "**/jquery*/**"
     ],
-    "rationale": "Raw HTML rendering should be tightly controlled to avoid unsafe content injection paths."
+    "rationale": "Raw HTML rendering should be tightly controlled to avoid unsafe content injection paths.",
+    "enforcement_level": "hard_fail"
   },
   {
     "id": "NFR-RAZOR-004B",
@@ -129,7 +133,8 @@
       "**/Scripts/ej2/**",
       "**/jquery*/**"
     ],
-    "rationale": "Generic MarkupString usage is context-dependent; review trust boundaries and sanitization guarantees."
+    "rationale": "Generic MarkupString usage is context-dependent; review trust boundaries and sanitization guarantees.",
+    "enforcement_level": "review"
   },
   {
     "id": "NFR-RAZOR-005",
@@ -155,6 +160,7 @@
       "**/Scripts/ej2/**",
       "**/jquery*/**"
     ],
-    "rationale": "Blocking operations in component lifecycle methods can freeze rendering and hurt UX under load."
+    "rationale": "Blocking operations in component lifecycle methods can freeze rendering and hurt UX under load.",
+    "enforcement_level": "review"
   }
 ]

@@ -195,6 +195,12 @@ def parse_args():
         help="Classify safe-AI risk (high/medium/low) and write report without running LLM review.",
     )
     parser.add_argument(
+        "--rate-limit-at-gateway",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Suppress NFR-API-011 when rate limiting is enforced upstream (gateway/ingress).",
+    )
+    parser.add_argument(
         "--safe-ai-only",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -700,6 +706,9 @@ def _is_blocking_dotnet_result_line(line_text):
 
 
 def _should_skip_match(rule, line_text):
+    line = str(line_text or "")
+    if "nfr:allow-" in line.lower():
+        return True
     if rule.get("ignore_comment_lines", False) and _is_comment_only_line(line_text):
         return True
     if rule.get("id") == "NFR-DOTNET-003" and not _is_blocking_dotnet_result_line(line_text):
@@ -707,6 +716,13 @@ def _should_skip_match(rule, line_text):
     if rule.get("id") == "NFR-FE-014":
         # If a dependency array is present in the same effect call line, this is not the target case.
         if re.search(r"\buseEffect\s*\([^\n]*,\s*\[", str(line_text or "")):
+            return True
+    if rule.get("id") == "NFR-FE-004":
+        # .then(onFulfilled, onRejected) handles errors without a trailing .catch.
+        if re.search(r"\.then\s*\(\s*[^)\n]*,\s*[^)\n]*\)", str(line_text or "")):
+            return True
+        # Same-line catch/finally chain likely handled.
+        if re.search(r"\.then\s*\([^)\n]*\)\s*\.(catch|finally)\s*\(", str(line_text or "")):
             return True
     return False
 
@@ -723,11 +739,18 @@ def _match_in_diff_scope(match_item, scan_root, changed_lines_by_file):
     return int(match_item.get("line", 1) or 1) in touched_lines
 
 
-def apply_contextual_overrides(findings):
+def apply_contextual_overrides(findings, args=None):
     out = []
     for finding in findings:
         item = dict(finding)
         rid = str(item.get("rule_id", ""))
+        if rid == "NFR-API-011" and bool(getattr(args, "rate_limit_at_gateway", False)):
+            # Explicit opt-out when service uses upstream gateway/ingress throttling.
+            continue
+        if rid == "NFR-FE-014":
+            snippet_l = str(item.get("snippet", "")).lower()
+            if "eslint-disable-next-line react-hooks/exhaustive-deps" in snippet_l:
+                continue
         if rid != "NFR-DOTNET-013":
             out.append(item)
             continue
@@ -2341,7 +2364,7 @@ def _review_single_finding(
         if policy_risk == "medium" and bool(safe_ai_redact_medium):
             snippet_for_prompt = _redact_snippet_for_external(snippet_for_prompt)
             policy_redacted = True
-    if str(finding.get("rule_id", "")) == "NFR-API-004":
+    if str(finding.get("rule_id", "")).startswith("NFR-API-004"):
         rule_guidance = (
             "Do NOT suggest JsonConvert.SerializeObjectAsync (invalid API). "
             "Prefer System.Text.Json stream-based async APIs (SerializeAsync/DeserializeAsync), "
@@ -3692,7 +3715,7 @@ def main():
             regex_workers=args.regex_workers,
             changed_lines_by_file=changed_lines_by_file,
         )
-        regex_findings = apply_contextual_overrides(regex_findings)
+        regex_findings = apply_contextual_overrides(regex_findings, args=args)
         regex_stage_seconds = time.perf_counter() - regex_started
         log_progress(f"Regex pre-scan produced {len(regex_findings)} finding(s)")
         log_progress(f"Regex stage timing: {regex_stage_seconds:.2f}s")
