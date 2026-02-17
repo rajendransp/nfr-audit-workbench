@@ -29,115 +29,132 @@
       <button id="tabSafeAi" class="tab-btn" type="button">Safe AI Risk</button>
     </section>
 
-    <section class="panel controls">
-      <div class="field">
-        <label for="filePicker">Findings File</label>
-        <select id="filePicker"></select>
-      </div>
-      <div class="field">
-        <label for="uploadInput">Upload findings.json</label>
-        <input id="uploadInput" type="file" accept=".json,application/json" />
-      </div>
-      <div class="field">
-        <label for="severityFilter">Severity</label>
-        <select id="severityFilter">
-          <option value="ALL">All</option>
-          <option value="S1">S1</option>
-          <option value="S2">S2</option>
-          <option value="S3">S3</option>
-          <option value="S4">S4</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="sourceFilter">Source</label>
-        <select id="sourceFilter">
-          <option value="ALL">All</option>
-          <option value="regex">regex</option>
-          <option value="roslyn">roslyn</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="trustTierFilter">Trust Tier</label>
-        <select id="trustTierFilter">
-          <option value="ALL">All</option>
-          <option value="llm_confirmed">llm_confirmed</option>
-          <option value="fast_routed">fast_routed</option>
-          <option value="fallback">fallback</option>
-          <option value="regex_only">regex_only</option>
-          <option value="roslyn">roslyn</option>
-          <option value="unknown">unknown</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="validationFilter">Validation</label>
-        <select id="validationFilter">
-          <option value="ALL">All</option>
-          <option value="ISSUE">Confirmed Issue</option>
-          <option value="FP">False Positive / Non-Issue</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="workflowStatusFilter">Workflow Status</label>
-        <select id="workflowStatusFilter">
-          <option value="ALL">All</option>
-          <option value="todo">To Do</option>
-          <option value="in_progress">In Progress</option>
-          <option value="verified">Verified</option>
-          <option value="resolved">Resolved</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="quickWinFilter">Quick Win</label>
-        <select id="quickWinFilter">
-          <option value="ALL">All</option>
-          <option value="YES">Yes</option>
-          <option value="NO">No</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="fallbackFilter">LLM Fallback</label>
-        <select id="fallbackFilter">
-          <option value="ALL">All</option>
-          <option value="YES">Yes</option>
-          <option value="NO">No</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="topLevelFilter">Top Level</label>
-        <select id="topLevelFilter">
-          <option value="ALL">All</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="subCategoryFilter">Sub Category</label>
-        <select id="subCategoryFilter">
-          <option value="ALL">All</option>
-        </select>
-      </div>
-      <div class="field grow">
-        <label for="searchInput">Search</label>
-        <input id="searchInput" type="text" placeholder="rule, file, why, recommendation" />
-      </div>
-    </section>
-
-    <section class="panel controls">
-      <div class="field grow">
-        <label>Columns</label>
-        <div id="columnToggles" class="toggles"></div>
-      </div>
-      <div class="field">
-        <label for="snippetHeight">Snippet Size</label>
-        <input id="snippetHeight" type="range" min="180" max="900" step="20" value="280" />
-        <div id="snippetHeightValue" class="mini">280px</div>
-      </div>
-      <div class="field">
-        <label for="patchHeight">Patch Size</label>
-        <input id="patchHeight" type="range" min="180" max="900" step="20" value="280" />
-        <div id="patchHeightValue" class="mini">280px</div>
-      </div>
-      <div class="field">
-        <label>Status</label>
+    <section class="panel filters-panel">
+      <div class="filters-head">
+        <div class="filters-title">Filters & View Options</div>
+        <button id="toggleFiltersPanelBtn" class="btn btn-lite" type="button" aria-expanded="false">Show Filters</button>
         <div id="statusText" class="status">Ready</div>
+      </div>
+      <div id="filtersPanelBody" class="controls hidden">
+        <div class="field">
+          <label for="filePicker">Findings File</label>
+          <select id="filePicker"></select>
+        </div>
+        <div class="field">
+          <label for="uploadInput">Upload findings.json</label>
+          <input id="uploadInput" type="file" accept=".json,application/json" />
+        </div>
+        <div class="field">
+          <label for="severityFilter">Severity</label>
+          <select id="severityFilter">
+            <option value="ALL">All</option>
+            <option value="S1">S1</option>
+            <option value="S2">S2</option>
+            <option value="S3">S3</option>
+            <option value="S4">S4</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="sourceFilter">Source</label>
+          <select id="sourceFilter">
+            <option value="ALL">All</option>
+            <option value="regex">regex</option>
+            <option value="roslyn">roslyn</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="ruleFilter">Rule</label>
+          <select id="ruleFilter">
+            <option value="ALL">All</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="trustTierFilter">Trust Tier</label>
+          <select id="trustTierFilter">
+            <option value="ALL">All</option>
+            <option value="llm_confirmed">llm_confirmed</option>
+            <option value="fast_routed">fast_routed</option>
+            <option value="fallback">fallback</option>
+            <option value="regex_only">regex_only</option>
+            <option value="roslyn">roslyn</option>
+            <option value="unknown">unknown</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="safeAiRiskFilter">Safe AI Risk</label>
+          <select id="safeAiRiskFilter">
+            <option value="ALL">All</option>
+            <option value="ANY">Any</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+            <option value="none">None</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="validationFilter">Validation</label>
+          <select id="validationFilter">
+            <option value="ALL">All</option>
+            <option value="ISSUE">Confirmed Issue</option>
+            <option value="FP">False Positive / Non-Issue</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="workflowStatusFilter">Workflow Status</label>
+          <select id="workflowStatusFilter">
+            <option value="ALL">All</option>
+            <option value="todo">To Do</option>
+            <option value="in_progress">In Progress</option>
+            <option value="verified">Verified</option>
+            <option value="resolved">Resolved</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="quickWinFilter">Quick Win</label>
+          <select id="quickWinFilter">
+            <option value="ALL">All</option>
+            <option value="YES">Yes</option>
+            <option value="NO">No</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="fallbackFilter">LLM Fallback</label>
+          <select id="fallbackFilter">
+            <option value="ALL">All</option>
+            <option value="YES">Yes</option>
+            <option value="NO">No</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="topLevelFilter">Top Level</label>
+          <select id="topLevelFilter">
+            <option value="ALL">All</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="subCategoryFilter">Sub Category</label>
+          <select id="subCategoryFilter">
+            <option value="ALL">All</option>
+          </select>
+        </div>
+        <div class="field grow">
+          <label for="searchInput">Search</label>
+          <input id="searchInput" type="text" placeholder="rule, file, why, recommendation" />
+        </div>
+        <div class="field grow">
+          <label>Columns</label>
+          <div id="columnToggles" class="toggles"></div>
+        </div>
+        <div class="field">
+          <label for="snippetHeight">Snippet Size</label>
+          <input id="snippetHeight" type="range" min="180" max="900" step="20" value="280" />
+          <div id="snippetHeightValue" class="mini">280px</div>
+        </div>
+        <div class="field">
+          <label for="patchHeight">Patch Size</label>
+          <input id="patchHeight" type="range" min="180" max="900" step="20" value="280" />
+          <div id="patchHeightValue" class="mini">280px</div>
+        </div>
       </div>
     </section>
 
@@ -147,12 +164,12 @@
           <table>
             <thead>
               <tr>
+                <th data-col="workflowStatus">Workflow Status</th>
                 <th data-col="severity">Severity</th>
                 <th data-col="source">Source</th>
                 <th data-col="trustTier">Trust Tier</th>
                 <th data-col="quickWin">Quick Win</th>
                 <th data-col="effortBenefit">Effort vs Benefit</th>
-                <th data-col="workflowStatus">Workflow Status</th>
                 <th data-col="rule">Rule</th>
                 <th data-col="topLevelCategory">Top Level</th>
                 <th data-col="subCategory">Sub Category</th>

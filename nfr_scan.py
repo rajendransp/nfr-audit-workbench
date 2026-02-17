@@ -393,6 +393,28 @@ def parse_args():
         help="Resume an existing run from findings_queue__*.json",
     )
     parser.add_argument(
+        "--revalidate-findings-json",
+        default="",
+        help="Re-run LLM validation for findings in an existing findings__*.json file.",
+    )
+    parser.add_argument(
+        "--revalidate-rule-id",
+        default="",
+        help="Optional rule id filter for --revalidate-findings-json (example: NFR-DOTNET-001).",
+    )
+    parser.add_argument(
+        "--revalidate-only-non-issue",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="When revalidating findings JSON, review only findings currently marked isIssue=false.",
+    )
+    parser.add_argument(
+        "--revalidate-max-findings",
+        type=int,
+        default=0,
+        help="Optional cap for number of findings to revalidate from findings JSON (0 = no cap).",
+    )
+    parser.add_argument(
         "--temperature",
         type=float,
         default=0.1,
@@ -481,6 +503,24 @@ def parse_args():
         "--ci-count-trust-tiers",
         default="llm_confirmed,fast_routed,fallback,regex_only,roslyn",
         help="Comma-separated trust tiers to include in CI counting.",
+    )
+    parser.add_argument(
+        "--price-input-per-1m",
+        type=float,
+        default=-1.0,
+        help="Optional price per 1M non-cached input tokens for cost estimation.",
+    )
+    parser.add_argument(
+        "--price-cached-input-per-1m",
+        type=float,
+        default=-1.0,
+        help="Optional price per 1M cached input tokens for cost estimation.",
+    )
+    parser.add_argument(
+        "--price-output-per-1m",
+        type=float,
+        default=-1.0,
+        help="Optional price per 1M output tokens for cost estimation.",
     )
     args = parser.parse_args()
     config = load_scan_config(args.config)
@@ -1103,6 +1143,7 @@ def build_fast_routed_review(finding):
         "fallback_used": False,
         "error_kind": "",
         "from_cache": False,
+        "token_usage": _empty_token_usage(),
         "fast_routed": True,
         "recovered_after_retry": False,
         "elapsed_ms": 0.0,
@@ -2044,6 +2085,81 @@ def _openai_extract_content(resp_json):
     return _openai_like_extract_content(resp_json)
 
 
+def _empty_token_usage():
+    return {
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+    }
+
+
+def _coerce_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _merge_token_usage(a, b):
+    out = _empty_token_usage()
+    left = a if isinstance(a, dict) else {}
+    right = b if isinstance(b, dict) else {}
+    out["input_tokens"] = _coerce_int(left.get("input_tokens"), 0) + _coerce_int(right.get("input_tokens"), 0)
+    out["cached_input_tokens"] = _coerce_int(left.get("cached_input_tokens"), 0) + _coerce_int(right.get("cached_input_tokens"), 0)
+    out["output_tokens"] = _coerce_int(left.get("output_tokens"), 0) + _coerce_int(right.get("output_tokens"), 0)
+    out["total_tokens"] = _coerce_int(left.get("total_tokens"), 0) + _coerce_int(right.get("total_tokens"), 0)
+    if out["total_tokens"] <= 0:
+        out["total_tokens"] = out["input_tokens"] + out["output_tokens"]
+    return out
+
+
+def _accumulate_token_usage(target, addition):
+    merged = _merge_token_usage(target, addition)
+    if isinstance(target, dict):
+        target.clear()
+        target.update(merged)
+    return merged
+
+
+def _extract_openai_cached_input_tokens(usage):
+    if not isinstance(usage, dict):
+        return 0
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        return _coerce_int(details.get("cached_tokens"), 0)
+    details = usage.get("input_tokens_details")
+    if isinstance(details, dict):
+        return _coerce_int(details.get("cached_tokens"), 0)
+    return 0
+
+
+def _extract_token_usage(provider_name, resp_json):
+    out = _empty_token_usage()
+    p = _canonical_provider_name(provider_name)
+    data = resp_json if isinstance(resp_json, dict) else {}
+    if p in {"openai", "openrouter", "xai"}:
+        usage = data.get("usage", {}) if isinstance(data.get("usage"), dict) else {}
+        out["input_tokens"] = _coerce_int(usage.get("prompt_tokens", usage.get("input_tokens", 0)), 0)
+        out["cached_input_tokens"] = _extract_openai_cached_input_tokens(usage)
+        out["output_tokens"] = _coerce_int(usage.get("completion_tokens", usage.get("output_tokens", 0)), 0)
+        out["total_tokens"] = _coerce_int(usage.get("total_tokens", out["input_tokens"] + out["output_tokens"]), 0)
+        return out
+    if p == "gemini":
+        usage = data.get("usageMetadata", {}) if isinstance(data.get("usageMetadata"), dict) else {}
+        out["input_tokens"] = _coerce_int(usage.get("promptTokenCount", usage.get("inputTokenCount", 0)), 0)
+        out["cached_input_tokens"] = _coerce_int(usage.get("cachedContentTokenCount", 0), 0)
+        out["output_tokens"] = _coerce_int(usage.get("candidatesTokenCount", usage.get("outputTokenCount", 0)), 0)
+        out["total_tokens"] = _coerce_int(usage.get("totalTokenCount", out["input_tokens"] + out["output_tokens"]), 0)
+        return out
+    # Ollama-compatible
+    out["input_tokens"] = _coerce_int(data.get("prompt_eval_count", data.get("prompt_tokens", 0)), 0)
+    out["cached_input_tokens"] = _coerce_int(data.get("cached_prompt_eval_count", 0), 0)
+    out["output_tokens"] = _coerce_int(data.get("eval_count", data.get("completion_tokens", 0)), 0)
+    out["total_tokens"] = _coerce_int(data.get("total_tokens", out["input_tokens"] + out["output_tokens"]), 0)
+    return out
+
+
 def _gemini_extract_content(resp_json):
     candidates = resp_json.get("candidates", [])
     if not candidates:
@@ -2270,6 +2386,7 @@ def _build_policy_blocked_result(finding, policy_mode, policy_risk, external_bou
         "fallback_used": True,
         "error_kind": "policy_blocked",
         "from_cache": False,
+        "token_usage": _empty_token_usage(),
         "recovered_after_retry": False,
         "elapsed_ms": 0.0,
     }
@@ -2479,7 +2596,8 @@ def _send_llm_request(
         }
         resp = requests.post(url, headers=headers, json=body, timeout=timeout)
         resp.raise_for_status()
-        return _openai_like_extract_content(resp.json())
+        payload = resp.json()
+        return _openai_like_extract_content(payload), _extract_token_usage(provider_name, payload)
     if provider_name == "gemini":
         url = f"{base_url.rstrip('/')}/models/{model}:generateContent"
         headers = {"Content-Type": "application/json"}
@@ -2489,7 +2607,8 @@ def _send_llm_request(
         }
         resp = requests.post(url, params={"key": api_key}, headers=headers, json=body, timeout=timeout)
         resp.raise_for_status()
-        return _gemini_extract_content(resp.json())
+        payload = resp.json()
+        return _gemini_extract_content(payload), _extract_token_usage(provider_name, payload)
 
     url = f"{base_url.rstrip('/')}/api/chat"
     body = {
@@ -2503,7 +2622,8 @@ def _send_llm_request(
     }
     resp = requests.post(url, json=body, timeout=timeout)
     resp.raise_for_status()
-    return resp.json().get("message", {}).get("content", "")
+    payload = resp.json()
+    return payload.get("message", {}).get("content", ""), _extract_token_usage(provider_name, payload)
 
 
 def _maybe_retry_patch_for_unknown(
@@ -2521,6 +2641,7 @@ def _maybe_retry_patch_for_unknown(
     prefer_patch_all,
     patch_min_confidence,
     snippet_for_prompt,
+    usage_total,
 ):
     is_issue = bool((parsed or {}).get("isIssue", False))
     patch_value = str((parsed or {}).get("patch", "unknown") or "unknown").strip().lower()
@@ -2547,7 +2668,7 @@ def _maybe_retry_patch_for_unknown(
         f"{snippet_for_prompt}\n"
     )
     try:
-        content = _send_llm_request(
+        content, usage = _send_llm_request(
             provider_name,
             model,
             base_url,
@@ -2557,6 +2678,7 @@ def _maybe_retry_patch_for_unknown(
             connect_timeout_seconds,
             read_timeout_seconds,
         )
+        _accumulate_token_usage(usage_total, usage)
         patch_only = _extract_json(content)
         candidate = str((patch_only or {}).get("patch", "unknown") or "unknown")
         if candidate.strip().lower() != "unknown":
@@ -2588,6 +2710,7 @@ def _retry_patch_after_noop(
     read_timeout_seconds,
     repair_retries,
     snippet_for_prompt,
+    usage_total,
 ):
     attempts = max(0, int(repair_retries or 0))
     if attempts <= 0:
@@ -2616,7 +2739,7 @@ def _retry_patch_after_noop(
             f"{patch}\n"
         )
         try:
-            content = _send_llm_request(
+            content, usage = _send_llm_request(
                 provider_name,
                 model,
                 base_url,
@@ -2626,6 +2749,7 @@ def _retry_patch_after_noop(
                 connect_timeout_seconds,
                 read_timeout_seconds,
             )
+            _accumulate_token_usage(usage_total, usage)
             repaired = _extract_json(content)
             candidate = str((repaired or {}).get("patch", "unknown") or "unknown")
             parsed["patch"] = candidate
@@ -2657,6 +2781,7 @@ def _verify_patch_semantics(
     connect_timeout_seconds,
     read_timeout_seconds,
     snippet_for_prompt,
+    usage_total,
     enabled=False,
 ):
     if not bool(enabled):
@@ -2684,7 +2809,7 @@ def _verify_patch_semantics(
     )
 
     try:
-        content = _send_llm_request(
+        content, usage = _send_llm_request(
             provider_name,
             model,
             base_url,
@@ -2694,6 +2819,7 @@ def _verify_patch_semantics(
             connect_timeout_seconds,
             read_timeout_seconds,
         )
+        _accumulate_token_usage(usage_total, usage)
         verdict = _extract_json(content)
     except Exception as exc:
         parsed["patch_verification"] = {
@@ -2866,11 +2992,12 @@ def _review_single_finding(
     last_error_kind = ""
     fallback_used = False
     attempts_used = 0
+    usage_total = _empty_token_usage()
     attempts_total = max(0, int(retries)) + 1
     for attempt in range(1, attempts_total + 1):
         attempts_used = attempt
         try:
-            content = _send_llm_request(
+            content, usage = _send_llm_request(
                 provider_name,
                 model,
                 base_url,
@@ -2880,6 +3007,7 @@ def _review_single_finding(
                 connect_timeout_seconds,
                 read_timeout_seconds,
             )
+            _accumulate_token_usage(usage_total, usage)
             parsed = _extract_json(content)
             if attempt > 1:
                 log_progress(
@@ -2961,6 +3089,7 @@ def _review_single_finding(
         prefer_patch_all_severities,
         patch_min_confidence,
         snippet_for_prompt,
+        usage_total,
     )
     parsed["patch_quality"] = _patch_quality(parsed.get("patch", "unknown"))
     parsed = _retry_patch_after_noop(
@@ -2976,6 +3105,7 @@ def _review_single_finding(
         read_timeout_seconds,
         patch_repair_retries,
         snippet_for_prompt,
+        usage_total,
     )
     parsed["patch_quality"] = _patch_quality(parsed.get("patch", "unknown"))
     if parsed["patch_quality"] == "valid" and not _is_unified_diff_like(parsed.get("patch", "")):
@@ -3017,6 +3147,7 @@ def _review_single_finding(
         connect_timeout_seconds,
         read_timeout_seconds,
         snippet_for_prompt,
+        usage_total,
         enabled=bool(patch_verify_pass),
     )
     parsed["patch_quality"] = _patch_quality(parsed.get("patch", "unknown"))
@@ -3032,6 +3163,9 @@ def _review_single_finding(
         "fallback_used": fallback_used,
         "error_kind": last_error_kind,
         "from_cache": False,
+        "provider": provider_name,
+        "model": str(model or ""),
+        "token_usage": usage_total,
         "recovered_after_retry": (not fallback_used and attempts_used > 1),
         "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 2),
     }
@@ -3186,6 +3320,39 @@ def _latency_stats_from_reviewed(items):
         "avg_ms": round(sum(lat) / len(lat), 2),
         "p50_ms": round(_percentile(lat, 50), 2),
         "p95_ms": round(_percentile(lat, 95), 2),
+    }
+
+
+def _llm_token_usage_from_reviewed(items):
+    agg = _empty_token_usage()
+    for item in items:
+        transport = item.get("llm_transport", {}) or {}
+        agg = _merge_token_usage(agg, transport.get("token_usage", {}))
+    return agg
+
+
+def _estimate_llm_cost(llm_token_usage, args):
+    if not isinstance(llm_token_usage, dict):
+        return {}
+    in_price = _coerce_float(getattr(args, "price_input_per_1m", -1.0), -1.0)
+    cached_price = _coerce_float(getattr(args, "price_cached_input_per_1m", -1.0), -1.0)
+    out_price = _coerce_float(getattr(args, "price_output_per_1m", -1.0), -1.0)
+    if in_price < 0 or cached_price < 0 or out_price < 0:
+        return {}
+    input_tokens = _coerce_int(llm_token_usage.get("input_tokens"), 0)
+    cached_input_tokens = min(input_tokens, _coerce_int(llm_token_usage.get("cached_input_tokens"), 0))
+    output_tokens = _coerce_int(llm_token_usage.get("output_tokens"), 0)
+    non_cached_input = max(0, input_tokens - cached_input_tokens)
+    est = (
+        (non_cached_input / 1_000_000.0) * in_price
+        + (cached_input_tokens / 1_000_000.0) * cached_price
+        + (output_tokens / 1_000_000.0) * out_price
+    )
+    return {
+        "input_per_1m": round(in_price, 6),
+        "cached_input_per_1m": round(cached_price, 6),
+        "output_per_1m": round(out_price, 6),
+        "estimated_cost_usd": round(est, 6),
     }
 
 
@@ -3568,6 +3735,8 @@ def write_json_report(summary_data, output_dir, roslyn_meta, scan_meta, pointers
             "by_language": summary_data["by_language"],
             "by_file_type": summary_data["by_file_type"],
             "throughput": summary_data.get("throughput", {}),
+            "llm_token_usage": summary_data.get("llm_token_usage", {}),
+            "llm_cost_estimate": summary_data.get("llm_cost_estimate", {}),
             "rule_quality": summary_data.get("rule_quality", {}),
             "patch_metrics": summary_data.get("patch_metrics", {}),
             "ai_policy_metrics": summary_data.get("ai_policy_metrics", {}),
@@ -3784,6 +3953,10 @@ def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta, pointers_di
     lines.append(f"- Safe AI policy metrics: {summary_data.get('ai_policy_metrics', {})}")
     if summary_data.get("throughput"):
         lines.append(f"- Throughput: {summary_data.get('throughput')}")
+    if summary_data.get("llm_token_usage"):
+        lines.append(f"- LLM token usage: {summary_data.get('llm_token_usage')}")
+    if summary_data.get("llm_cost_estimate"):
+        lines.append(f"- LLM cost estimate: {summary_data.get('llm_cost_estimate')}")
     lines.append("")
 
     lines.append("## Roslyn")
@@ -4153,6 +4326,205 @@ def run_safe_ai_only(scan_path, output_root_dir, args, llm_provider, base_url):
     print(f"Latest pointers updated in: {output_root_dir}")
 
 
+def _revalidation_selection(findings, rule_id="", only_non_issue=True, max_findings=0):
+    selected = []
+    rid = str(rule_id or "").strip().lower()
+    cap = max(0, int(max_findings or 0))
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        if rid and str(item.get("rule_id", "")).strip().lower() != rid:
+            continue
+        if only_non_issue and bool((item.get("llm_review", {}) or {}).get("isIssue", False)):
+            continue
+        if not item.get("snippet") and not item.get("match_text"):
+            continue
+        selected.append(item)
+        if cap and len(selected) >= cap:
+            break
+    return selected
+
+
+def run_revalidate_findings_json(args, runtime):
+    findings_json_path = Path(args.revalidate_findings_json).resolve()
+    if not findings_json_path.exists():
+        raise FileNotFoundError(f"Findings JSON not found: {findings_json_path}")
+    payload = json.loads(findings_json_path.read_text(encoding="utf-8", errors="ignore"))
+    if not isinstance(payload, dict):
+        raise ValueError("Findings JSON must be an object payload")
+    findings = payload.get("findings", [])
+    if not isinstance(findings, list):
+        raise ValueError("Findings JSON missing findings array")
+
+    to_review = _revalidation_selection(
+        findings,
+        rule_id=args.revalidate_rule_id,
+        only_non_issue=bool(args.revalidate_only_non_issue),
+        max_findings=args.revalidate_max_findings,
+    )
+    log_progress(
+        f"Revalidation mode: selected {len(to_review)} finding(s) "
+        f"(rule_filter={args.revalidate_rule_id or 'ALL'}, only_non_issue={bool(args.revalidate_only_non_issue)})."
+    )
+    if not to_review:
+        print("No findings matched revalidation filters.")
+        return
+    if int(args.max_llm) <= 0:
+        raise ValueError("--max-llm must be > 0 when using --revalidate-findings-json")
+
+    llm_provider = runtime["provider"]
+    model = runtime["model"]
+    base_url = runtime["base_url"]
+    llm_api_key = runtime["api_key"]
+    if _provider_requires_key(llm_provider) and not llm_api_key:
+        label = _provider_label(llm_provider)
+        raise ValueError(f"{label} provider selected but API key is not set in CLI/env.")
+
+    batch_size = int(args.max_llm)
+    total = len(to_review)
+    updated = []
+    start = 0
+    batch_no = 1
+    llm_stage_seconds = 0.0
+    while start < total:
+        end = min(start + batch_size, total)
+        current = to_review[start:end]
+        log_progress(
+            f"Revalidation batch {batch_no}: {len(current)} finding(s) to {llm_provider} "
+            f"({start + 1}-{end} of {total})"
+        )
+        started = time.perf_counter()
+        reviewed_batch = review_with_llm(
+            current,
+            llm_provider,
+            model,
+            base_url,
+            llm_api_key,
+            args.temperature,
+            workers=max(1, int(args.llm_workers)),
+            retries=args.llm_retries,
+            retry_backoff_seconds=args.llm_retry_backoff_seconds,
+            connect_timeout_seconds=args.llm_connect_timeout_seconds,
+            read_timeout_seconds=args.llm_read_timeout_seconds,
+            prefer_patch_s1s2=bool(args.prefer_patch_s1s2),
+            prefer_patch_all_severities=bool(args.prefer_patch_all_severities),
+            patch_min_confidence=float(args.patch_min_confidence),
+            patch_repair_retries=int(args.patch_repair_retries),
+            patch_strict_locality=bool(args.patch_strict_locality),
+            patch_locality_window=int(args.patch_locality_window),
+            patch_verify_pass=bool(args.patch_verify_pass),
+            safe_ai_policy_mode=str(args.safe_ai_policy_mode),
+            safe_ai_allow_external_high_risk=bool(args.safe_ai_allow_external_high_risk),
+            safe_ai_redact_medium=bool(args.safe_ai_redact_medium),
+        )
+        llm_stage_seconds += time.perf_counter() - started
+        updated.extend(reviewed_batch)
+        if end >= total:
+            break
+        if args.auto_continue_batches:
+            start = end
+            batch_no += 1
+            continue
+        if not sys.stdin or not sys.stdin.isatty():
+            log_progress("Non-interactive shell detected. Stopping before next revalidation batch.")
+            break
+        try:
+            answer = input(
+                f"Processed {end}/{total} findings. Continue with next batch of up to {batch_size}? [y/N]: "
+            ).strip().lower()
+        except EOFError:
+            log_progress("No interactive input available. Stopping before next revalidation batch.")
+            break
+        if answer not in {"y", "yes"}:
+            log_progress("Stopped by user after current revalidation batch.")
+            break
+        start = end
+        batch_no += 1
+
+    by_key = {}
+    by_triplet = {}
+    for item in updated:
+        if not isinstance(item, dict):
+            continue
+        fk = item.get("finding_key")
+        if fk:
+            by_key[fk] = item
+        triplet = (
+            str(item.get("rule_id", "")),
+            str(item.get("file", "")),
+            int(item.get("line", 0) or 0),
+        )
+        by_triplet[triplet] = item
+
+    merged = []
+    replaced = 0
+    for item in findings:
+        if not isinstance(item, dict):
+            merged.append(item)
+            continue
+        replacement = None
+        fk = item.get("finding_key")
+        if fk and fk in by_key:
+            replacement = by_key[fk]
+        if replacement is None:
+            triplet = (
+                str(item.get("rule_id", "")),
+                str(item.get("file", "")),
+                int(item.get("line", 0) or 0),
+            )
+            replacement = by_triplet.get(triplet)
+        if replacement is not None:
+            merged.append(replacement)
+            replaced += 1
+        else:
+            merged.append(item)
+
+    summary_data = summarize(merged)
+    llm_lat = _latency_stats_from_reviewed(merged)
+    prior_throughput = ((payload.get("summary", {}) or {}).get("throughput", {}) or {})
+    prior_stage = (prior_throughput.get("stage_seconds", {}) or {})
+    summary_data["throughput"] = {
+        "stage_seconds": {
+            "regex": round(float(prior_stage.get("regex", 0.0) or 0.0), 2),
+            "roslyn": round(float(prior_stage.get("roslyn", 0.0) or 0.0), 2),
+            "llm": round(float(llm_stage_seconds), 2),
+            "total": round(float(llm_stage_seconds), 2),
+        },
+        "llm_latency_ms": llm_lat,
+    }
+    summary_data["llm_token_usage"] = _llm_token_usage_from_reviewed(merged)
+    summary_data["llm_cost_estimate"] = _estimate_llm_cost(summary_data["llm_token_usage"], args)
+
+    scan_meta = dict(payload.get("scan", {}) or {})
+    if not scan_meta:
+        scan_meta = {
+            "project": _project_name_from_scan_path(Path(args.path).resolve()),
+            "run_version": datetime.now().strftime("%Y%m%d_%H%M%S"),
+            "scan_path": str(Path(args.path).resolve()),
+        }
+    scan_meta["findings_file"] = findings_json_path.name
+    if not scan_meta.get("digest_file"):
+        scan_meta["digest_file"] = f"nfr_digest__{scan_meta.get('project','project')}__{scan_meta.get('run_version','run')}.md"
+    if not scan_meta.get("sarif_file"):
+        scan_meta["sarif_file"] = f"nfr__{scan_meta.get('project','project')}__{scan_meta.get('run_version','run')}.sarif"
+    if not scan_meta.get("fallback_file"):
+        scan_meta["fallback_file"] = f"fallback_findings__{scan_meta.get('project','project')}__{scan_meta.get('run_version','run')}.json"
+
+    output_dir = findings_json_path.parent
+    roslyn_meta = dict(payload.get("roslyn", {}) or {})
+    json_path = write_json_report(summary_data, output_dir, roslyn_meta, scan_meta, pointers_dir=output_dir)
+    md_path = write_markdown(summary_data, output_dir, roslyn_meta, scan_meta, pointers_dir=output_dir)
+    sarif_path = write_sarif(summary_data, output_dir, scan_meta, pointers_dir=output_dir)
+    fallback_path = write_fallback_report(summary_data, output_dir, scan_meta, pointers_dir=output_dir)
+
+    print(
+        f"Revalidation complete. Updated {replaced} finding(s) out of {len(to_review)} selected. "
+        f"Confirmed issues now: {len(summary_data.get('confirmed', []))}"
+    )
+    print(f"Reports written: {json_path.name}, {md_path.name}, {sarif_path.name}, {fallback_path.name}")
+    print(f"Output directory: {output_dir}")
+
+
 def main():
     load_env()
     args = parse_args()
@@ -4175,6 +4547,13 @@ def main():
         if args.resume_queue:
             raise ValueError("--safe-ai-only cannot be combined with --resume-queue")
         run_safe_ai_only(scan_path, output_root_dir, args, llm_provider, base_url)
+        return
+    if args.revalidate_findings_json:
+        if args.resume_queue:
+            raise ValueError("--revalidate-findings-json cannot be combined with --resume-queue")
+        if bool(args.safe_ai_only):
+            raise ValueError("--revalidate-findings-json cannot be combined with --safe-ai-only")
+        run_revalidate_findings_json(args, runtime)
         return
     changed_lines_by_file = {}
     pre_scan_rule_stats = {}
@@ -4424,6 +4803,9 @@ def main():
                 "fallback_used": False,
                 "error_kind": "",
                 "from_cache": True,
+                "provider": llm_provider,
+                "model": str(model or ""),
+                "token_usage": _empty_token_usage(),
                 "recovered_after_retry": False,
             }
             cached_review["llm_error_kind"] = ""
@@ -4502,6 +4884,9 @@ def main():
                 "fallback_used": False,
                 "error_kind": "skipped",
                 "from_cache": False,
+                "provider": llm_provider,
+                "model": str(model or ""),
+                "token_usage": _empty_token_usage(),
                 "recovered_after_retry": False,
                 "llm_skipped": True,
             }
@@ -4669,6 +5054,8 @@ def main():
         },
         "llm_latency_ms": llm_lat,
     }
+    summary_data["llm_token_usage"] = _llm_token_usage_from_reviewed(reviewed)
+    summary_data["llm_cost_estimate"] = _estimate_llm_cost(summary_data["llm_token_usage"], args)
     summary_data["rule_pipeline_stats"] = pipeline_stats
     current_quality = summary_data.get("rule_quality", {})
     summary_data["rule_precision_trend"] = build_rule_precision_trend(quality_history, current_quality)

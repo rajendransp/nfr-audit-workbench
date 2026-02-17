@@ -103,13 +103,84 @@ code { font-family: "IBM Plex Mono", monospace; font-size: .85rem; }
 }
 .field { display: grid; gap: 6px; min-width: 140px; }
 .field.grow { flex: 1; min-width: 280px; }
+.filters-panel {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.filters-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.filters-title {
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--ink);
+}
+.filters-head .status {
+  margin-left: auto;
+  font-size: .82rem;
+}
+#filtersPanelBody {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed #e2d4bf;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 8px 10px;
+}
+#filtersPanelBody.hidden {
+  display: none;
+}
+#filtersPanelBody .field {
+  min-width: 0;
+  gap: 4px;
+}
+#filtersPanelBody .field.grow {
+  min-width: 0;
+}
+#filtersPanelBody .field:nth-child(1) { grid-column: span 5; }  /* findings file */
+#filtersPanelBody .field:nth-child(2) { grid-column: span 2; }  /* upload */
+#filtersPanelBody .field:nth-child(3) { grid-column: span 1; }  /* severity */
+#filtersPanelBody .field:nth-child(4) { grid-column: span 1; }  /* source */
+#filtersPanelBody .field:nth-child(5) { grid-column: span 1; }  /* rule */
+#filtersPanelBody .field:nth-child(6) { grid-column: span 1; }  /* trust tier */
+#filtersPanelBody .field:nth-child(7) { grid-column: span 1; }  /* safe ai risk */
+#filtersPanelBody .field:nth-child(8) { grid-column: span 1; }  /* validation */
+#filtersPanelBody .field:nth-child(9) { grid-column: span 1; }  /* workflow */
+#filtersPanelBody .field:nth-child(10) { grid-column: span 1; } /* quick win */
+#filtersPanelBody .field:nth-child(11) { grid-column: span 1; } /* fallback */
+#filtersPanelBody .field:nth-child(12) { grid-column: span 1; } /* top level */
+#filtersPanelBody .field:nth-child(13) { grid-column: span 1; } /* sub cat */
+#filtersPanelBody .field:nth-child(14) { grid-column: span 2; } /* search */
+#filtersPanelBody .field:nth-child(15) { grid-column: span 6; } /* columns */
+#filtersPanelBody .field:nth-child(16) { grid-column: span 2; } /* snippet */
+#filtersPanelBody .field:nth-child(17) { grid-column: span 2; } /* patch */
+#filtersPanelBody .toggles {
+  max-height: 120px;
+  overflow: auto;
+  border: 1px solid #e8dcc8;
+  border-radius: 8px;
+  padding: 6px 8px;
+}
 label { font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; color: var(--ink-dim); }
 select, input {
   border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 8px;
+  padding: 5px 8px;
   font: inherit;
   background: #fff;
+  height: 36px;
+}
+input[type="checkbox"] {
+  height: auto;
+  border: none;
+  padding: 0;
+}
+.row-workflow-select {
+  min-width: 116px;
+  padding: 4px 6px;
+  font-size: .8rem;
 }
 .tableWrap {
   overflow: hidden;
@@ -119,7 +190,7 @@ select, input {
 .grid-scroll {
   overflow: auto;
   min-height: 320px;
-  max-height: calc(100vh - 320px);
+  max-height: calc(100vh - 260px);
   border-bottom: 1px solid #eadfce;
 }
 table { width: 100%; border-collapse: collapse; table-layout: auto; }
@@ -235,7 +306,16 @@ tr.clickable:hover { background: #f4efe6; }
   overflow: auto;
 }
 .toggles { display: flex; flex-wrap: wrap; gap: 10px; }
-.toggle-item { display: inline-flex; align-items: center; gap: 4px; font-size: .8rem; }
+.toggle-item { display: inline-flex; align-items: center; gap: 6px; font-size: .8rem; padding: 2px 0; }
+.mini-btn {
+  border: 1px solid var(--line);
+  background: #f8f4ec;
+  color: var(--ink);
+  border-radius: 6px;
+  padding: 1px 6px;
+  line-height: 1.1;
+  cursor: pointer;
+}
 .status { color: var(--ink-dim); font-size: .86rem; }
 .pill-yes { color: #0b6f44; font-weight: 700; }
 .pill-no { color: #7a2832; font-weight: 700; }
@@ -250,6 +330,11 @@ tr.clickable:hover { background: #f4efe6; }
   .splitter { display: none; }
   .split-right { position: static; max-height: none; }
   .grid-scroll { max-height: none; }
+  #filtersPanelBody { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #filtersPanelBody .field { grid-column: span 1 !important; }
+  #filtersPanelBody .field:nth-child(1),
+  #filtersPanelBody .field:nth-child(14),
+  #filtersPanelBody .field:nth-child(15) { grid-column: span 2 !important; }
 }
 @media (max-width: 640px) {
   .cards { grid-template-columns: repeat(2, minmax(120px, 1fr)); }

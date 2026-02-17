@@ -17,6 +17,7 @@ var state = {
     trustTier: true,
     quickWin: true,
     effortBenefit: true,
+    workflowStatus: true,
     rule: true,
     topLevelCategory: true,
     subCategory: true,
@@ -33,7 +34,9 @@ var state = {
 
 var severityEl = document.getElementById("severityFilter");
 var sourceEl = document.getElementById("sourceFilter");
+var ruleEl = document.getElementById("ruleFilter");
 var trustTierEl = document.getElementById("trustTierFilter");
+var safeAiRiskEl = document.getElementById("safeAiRiskFilter");
 var validationEl = document.getElementById("validationFilter");
 var workflowStatusEl = document.getElementById("workflowStatusFilter");
 var quickWinEl = document.getElementById("quickWinFilter");
@@ -64,9 +67,12 @@ var firstPageBtnEl = document.getElementById("firstPageBtn");
 var prevPageBtnEl = document.getElementById("prevPageBtn");
 var nextPageBtnEl = document.getElementById("nextPageBtn");
 var lastPageBtnEl = document.getElementById("lastPageBtn");
+var toggleFiltersPanelBtnEl = document.getElementById("toggleFiltersPanelBtn");
+var filtersPanelBodyEl = document.getElementById("filtersPanelBody");
 state.pageSize = Number(pageSizeEl && pageSizeEl.value ? pageSizeEl.value : 20) || 20;
 
-var COLUMN_ORDER = ["severity","source","trustTier","quickWin","effortBenefit","workflowStatus","rule","topLevelCategory","subCategory","language","fileType","location","confidence","recommendation","snippet","patch","title"];
+var DEFAULT_COLUMN_ORDER = ["workflowStatus","severity","source","trustTier","quickWin","effortBenefit","rule","topLevelCategory","subCategory","language","fileType","location","confidence","recommendation","snippet","patch","title"];
+var COLUMN_ORDER = DEFAULT_COLUMN_ORDER.slice();
 var DEFAULT_EMPTY_TEXT = "No findings match current filters.";
 
 function setStatus(message) {
@@ -123,6 +129,12 @@ function workflowStatusLabel(status) {
 
 function fallbackOf(f) {
   return Boolean(get(f, ["llm_transport", "fallback_used"], false));
+}
+
+function safeAiRiskOf(f) {
+  var r = String(get(f, ["ai_policy", "risk"], "") || "").trim().toLowerCase();
+  if (r === "high" || r === "medium" || r === "low") return r;
+  return "none";
 }
 
 function trustTierOf(f) {
@@ -267,6 +279,10 @@ function subCategoryOf(f) {
   return String(f.sub_category || "unknown").toLowerCase();
 }
 
+function ruleOf(f) {
+  return String(f.rule_id || "unknown").toUpperCase();
+}
+
 function setSelectOptions(selectEl, values, keepValue) {
   if (!selectEl) return;
   var sorted = values.slice().sort();
@@ -282,8 +298,12 @@ function setSelectOptions(selectEl, values, keepValue) {
 function refreshCategoryFilters() {
   var prevTop = topLevelEl ? topLevelEl.value : "ALL";
   var prevSub = subCategoryEl ? subCategoryEl.value : "ALL";
+  var prevRule = ruleEl ? ruleEl.value : "ALL";
   var topLevels = {};
+  var rules = {};
   for (var i = 0; i < state.all.length; i++) topLevels[topLevelOf(state.all[i])] = true;
+  for (var r = 0; r < state.all.length; r++) rules[ruleOf(state.all[r])] = true;
+  setSelectOptions(ruleEl, Object.keys(rules), prevRule !== "ALL" ? prevRule : "");
   setSelectOptions(topLevelEl, Object.keys(topLevels), prevTop !== "ALL" ? prevTop : "");
 
   var selectedTop = topLevelEl ? topLevelEl.value : "ALL";
@@ -353,7 +373,7 @@ function td(col, content) {
   return '<td data-col="' + col + '">' + content + '</td>';
 }
 
-function rowTemplate(f, i) {
+function _columnCellMap(f) {
   var sev = sevOf(f);
   var cls = sev.toLowerCase();
   var title = get(f, ["llm_review", "title"], f.rule_title || "Untitled");
@@ -364,30 +384,118 @@ function rowTemplate(f, i) {
   var patchStatus = patchStatusOf(f);
   var quickWin = quickWinOf(f);
   var effortBenefit = effortOf(f) + " / " + benefitOf(f);
+  var ws = workflowStatusOf(f);
+  return {
+    workflowStatus:
+      '<select class="row-workflow-select" data-fk="' + esc(f.finding_key || "") + '">' +
+      '<option value="todo"' + (ws === "todo" ? " selected" : "") + '>To Do</option>' +
+      '<option value="in_progress"' + (ws === "in_progress" ? " selected" : "") + '>In Progress</option>' +
+      '<option value="verified"' + (ws === "verified" ? " selected" : "") + '>Verified</option>' +
+      '<option value="resolved"' + (ws === "resolved" ? " selected" : "") + '>Resolved</option>' +
+      '</select>',
+    severity: '<span class="badge ' + esc(cls) + '">' + esc(sev) + '</span>',
+    source: esc(f.source || "unknown"),
+    trustTier: '<span class="trust-badge trust-' + esc(trustTierOf(f)) + '">' + esc(trustTierOf(f)) + '</span>',
+    quickWin: quickWin ? '<span class="pill-yes">Yes</span>' : '<span class="pill-no">No</span>',
+    effortBenefit: '<span class="mini">' + esc(effortBenefit) + '</span>',
+    rule: esc(f.rule_id || "-"),
+    topLevelCategory: esc(topLevelOf(f)),
+    subCategory: esc(subCategoryOf(f)),
+    language: esc(f.language || "unknown"),
+    fileType: esc(f.file_type || "unknown"),
+    location: '<code>' + esc(loc) + '</code>',
+    confidence: esc(conf),
+    recommendation: esc(shortText(rec, 80)),
+    snippet: esc(shortText(snippet.replace(/\s+/g, " "), 90)),
+    patch: esc(patchStatus),
+    title: esc(title)
+  };
+}
 
+function rowTemplate(f, i) {
+  var cells = _columnCellMap(f);
   var html = '<tr class="clickable" data-i="' + i + '">';
-  html += td("severity", '<span class="badge ' + esc(cls) + '">' + esc(sev) + '</span>');
-  html += td("source", esc(f.source || "unknown"));
-  html += td("trustTier", '<span class="trust-badge trust-' + esc(trustTierOf(f)) + '">' + esc(trustTierOf(f)) + '</span>');
-  html += td("quickWin", quickWin ? '<span class="pill-yes">Yes</span>' : '<span class="pill-no">No</span>');
-  html += td("effortBenefit", '<span class="mini">' + esc(effortBenefit) + '</span>');
-  html += td("workflowStatus", '<span class="trust-badge trust-' + esc(workflowStatusLabel(workflowStatusOf(f))) + '">' + esc(workflowStatusLabel(workflowStatusOf(f))) + '</span>');
-  html += td("rule", esc(f.rule_id || "-"));
-  html += td("topLevelCategory", esc(topLevelOf(f)));
-  html += td("subCategory", esc(subCategoryOf(f)));
-  html += td("language", esc(f.language || "unknown"));
-  html += td("fileType", esc(f.file_type || "unknown"));
-  html += td("location", '<code>' + esc(loc) + '</code>');
-  html += td("confidence", esc(conf));
-  html += td("recommendation", esc(shortText(rec, 80)));
-  html += td("snippet", esc(shortText(snippet.replace(/\s+/g, " "), 90)));
-  html += td("patch", esc(patchStatus));
-  html += td("title", esc(title));
+  for (var c = 0; c < COLUMN_ORDER.length; c++) {
+    var key = COLUMN_ORDER[c];
+    html += td(key, cells[key] || "");
+  }
   html += '</tr>';
   return html;
 }
 
+function normalizeColumnOrder(order) {
+  var incoming = Array.isArray(order) ? order : [];
+  var keep = {};
+  var out = [];
+  for (var i = 0; i < incoming.length; i++) {
+    var c = String(incoming[i] || "");
+    if (!c || keep[c] || DEFAULT_COLUMN_ORDER.indexOf(c) === -1) continue;
+    keep[c] = true;
+    out.push(c);
+  }
+  for (var j = 0; j < DEFAULT_COLUMN_ORDER.length; j++) {
+    var d = DEFAULT_COLUMN_ORDER[j];
+    if (!keep[d]) out.push(d);
+  }
+  return out;
+}
+
+function saveColumnPrefs() {
+  try {
+    localStorage.setItem("nfr_columns_visibility", JSON.stringify(state.columns));
+    localStorage.setItem("nfr_columns_order", JSON.stringify(COLUMN_ORDER));
+  } catch (e) {}
+}
+
+function loadColumnPrefs() {
+  try {
+    var rawVis = localStorage.getItem("nfr_columns_visibility");
+    if (rawVis) {
+      var vis = JSON.parse(rawVis);
+      if (vis && typeof vis === "object") {
+        for (var i = 0; i < DEFAULT_COLUMN_ORDER.length; i++) {
+          var c = DEFAULT_COLUMN_ORDER[i];
+          if (c in vis) state.columns[c] = Boolean(vis[c]);
+        }
+      }
+    }
+  } catch (e) {}
+  try {
+    var rawOrder = localStorage.getItem("nfr_columns_order");
+    if (rawOrder) COLUMN_ORDER = normalizeColumnOrder(JSON.parse(rawOrder));
+  } catch (e) {}
+}
+
+function moveColumn(col, dir) {
+  var idx = COLUMN_ORDER.indexOf(col);
+  if (idx === -1) return;
+  var swapIdx = idx + (dir < 0 ? -1 : 1);
+  if (swapIdx < 0 || swapIdx >= COLUMN_ORDER.length) return;
+  var t = COLUMN_ORDER[idx];
+  COLUMN_ORDER[idx] = COLUMN_ORDER[swapIdx];
+  COLUMN_ORDER[swapIdx] = t;
+  saveColumnPrefs();
+  renderColumnToggles();
+  renderTable();
+  refreshSortIndicators();
+}
+
+function syncHeaderOrder() {
+  var headerRow = document.querySelector("thead tr");
+  if (!headerRow) return;
+  var byCol = {};
+  var ths = headerRow.querySelectorAll("th[data-col]");
+  for (var i = 0; i < ths.length; i++) {
+    byCol[ths[i].getAttribute("data-col")] = ths[i];
+  }
+  for (var c = 0; c < COLUMN_ORDER.length; c++) {
+    var key = COLUMN_ORDER[c];
+    if (byCol[key]) headerRow.appendChild(byCol[key]);
+  }
+}
+
 function applyColumnVisibility() {
+  syncHeaderOrder();
   var ths = document.querySelectorAll("th[data-col]");
   for (var i = 0; i < ths.length; i++) {
     var col = ths[i].getAttribute("data-col");
@@ -408,7 +516,11 @@ function renderColumnToggles() {
   for (var i = 0; i < COLUMN_ORDER.length; i++) {
     var c = COLUMN_ORDER[i];
     var checked = state.columns[c] ? "checked" : "";
-    html += '<label class="toggle-item"><input type="checkbox" data-col-toggle="' + c + '" ' + checked + '/> ' + esc(labels[c]) + '</label>';
+    html += '<div class="toggle-item">'
+      + '<label><input type="checkbox" data-col-toggle="' + c + '" ' + checked + '/> ' + esc(labels[c]) + '</label>'
+      + '<button type="button" class="mini-btn" data-col-move="' + c + '" data-dir="-1" title="Move up">↑</button>'
+      + '<button type="button" class="mini-btn" data-col-move="' + c + '" data-dir="1" title="Move down">↓</button>'
+      + '</div>';
   }
   columnTogglesEl.innerHTML = html;
 }
@@ -511,7 +623,14 @@ function includeByFilters(f) {
   var isIssue = isIssueOf(f);
   if (severityEl.value !== "ALL" && sev !== severityEl.value) return false;
   if (sourceEl.value !== "ALL" && source !== sourceEl.value) return false;
+  if (ruleEl && ruleEl.value !== "ALL" && ruleOf(f) !== ruleEl.value) return false;
   if (trustTierEl && trustTierEl.value !== "ALL" && trustTierOf(f) !== trustTierEl.value) return false;
+  if (safeAiRiskEl && safeAiRiskEl.value !== "ALL") {
+    var risk = safeAiRiskOf(f);
+    if (safeAiRiskEl.value === "ANY" && risk === "none") return false;
+    if (safeAiRiskEl.value === "none" && risk !== "none") return false;
+    if (safeAiRiskEl.value !== "ANY" && safeAiRiskEl.value !== "none" && risk !== safeAiRiskEl.value) return false;
+  }
   if (validationEl && validationEl.value === "ISSUE" && !isIssue) return false;
   if (validationEl && validationEl.value === "FP" && isIssue) return false;
   if (workflowStatusEl && workflowStatusEl.value !== "ALL" && workflowStatusOf(f) !== workflowStatusEl.value) return false;
@@ -529,7 +648,7 @@ function includeByFilters(f) {
   if (!q) return true;
   var hay = [
     f.rule_id, f.rule_title, f.file, f.match_text, f.language, f.file_type,
-    f.top_level_category, f.sub_category, f.trust_tier, trustTierOf(f),
+    f.top_level_category, f.sub_category, f.trust_tier, trustTierOf(f), workflowStatusOf(f),
     get(f,["llm_review","title"],""), get(f,["llm_review","why"],""), get(f,["llm_review","recommendation"],"")
   ].join(" ").toLowerCase();
   return hay.indexOf(q) !== -1;
@@ -677,7 +796,8 @@ function loadReviewState() {
     });
 }
 
-function saveWorkflowStatus(finding, status) {
+function saveWorkflowStatus(finding, status, refreshDetails) {
+  if (refreshDetails == null) refreshDetails = true;
   if (!finding || !finding.finding_key) return;
   var body = {
     finding_key: String(finding.finding_key),
@@ -696,7 +816,7 @@ function saveWorkflowStatus(finding, status) {
         state.reviewState[payload.finding_key] = payload.entry;
       }
       applyFilters();
-      showDetails(finding);
+      if (refreshDetails) showDetails(finding);
       setStatus("Workflow status saved.");
     })
     .catch(showError);
@@ -835,7 +955,9 @@ filePickerEl.addEventListener("change", function () { loadData(filePickerEl.valu
 uploadEl.addEventListener("change", function () { uploadFile(uploadEl.files[0]).catch(showError); });
 severityEl.addEventListener("change", applyFilters);
 sourceEl.addEventListener("change", applyFilters);
+if (ruleEl) ruleEl.addEventListener("change", applyFilters);
 if (trustTierEl) trustTierEl.addEventListener("change", applyFilters);
+if (safeAiRiskEl) safeAiRiskEl.addEventListener("change", applyFilters);
 if (validationEl) validationEl.addEventListener("change", applyFilters);
 if (workflowStatusEl) workflowStatusEl.addEventListener("change", applyFilters);
 quickWinEl.addEventListener("change", applyFilters);
@@ -851,14 +973,40 @@ columnTogglesEl.addEventListener("change", function (e) {
   var col = e.target.getAttribute("data-col-toggle");
   if (!col) return;
   state.columns[col] = Boolean(e.target.checked);
+  saveColumnPrefs();
   applyColumnVisibility();
+});
+columnTogglesEl.addEventListener("click", function (e) {
+  var btn = e.target.closest("button[data-col-move]");
+  if (!btn) return;
+  var col = btn.getAttribute("data-col-move");
+  var dir = Number(btn.getAttribute("data-dir") || "0");
+  if (!col || !dir) return;
+  moveColumn(col, dir);
 });
 
 rowsEl.addEventListener("click", function (e) {
+  if (e.target && e.target.closest(".row-workflow-select")) return;
   var tr = e.target.closest("tr[data-i]");
   if (!tr) return;
   var i = Number(tr.getAttribute("data-i"));
   showDetails(state.pageRows[i]);
+});
+
+rowsEl.addEventListener("change", function (e) {
+  var sel = e.target && e.target.closest(".row-workflow-select");
+  if (!sel) return;
+  var fk = String(sel.getAttribute("data-fk") || "");
+  if (!fk) return;
+  var finding = null;
+  for (var i = 0; i < state.pageRows.length; i++) {
+    if (String(state.pageRows[i].finding_key || "") === fk) {
+      finding = state.pageRows[i];
+      break;
+    }
+  }
+  if (!finding) return;
+  saveWorkflowStatus(finding, String(sel.value || "todo"), false);
 });
 
 document.querySelector("thead").addEventListener("click", function (e) {
@@ -980,7 +1128,26 @@ function initPatchHeight() {
   }
 }
 
+function initFiltersPanel() {
+  if (!toggleFiltersPanelBtnEl || !filtersPanelBodyEl) return;
+  var isOpen = false;
+  try { isOpen = localStorage.getItem("nfr_filters_panel_open") === "1"; } catch (e) {}
+  function apply() {
+    filtersPanelBodyEl.classList.toggle("hidden", !isOpen);
+    toggleFiltersPanelBtnEl.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    toggleFiltersPanelBtnEl.textContent = isOpen ? "Hide Filters" : "Show Filters";
+  }
+  apply();
+  toggleFiltersPanelBtnEl.addEventListener("click", function () {
+    isOpen = !isOpen;
+    apply();
+    try { localStorage.setItem("nfr_filters_panel_open", isOpen ? "1" : "0"); } catch (e) {}
+  });
+}
+
+loadColumnPrefs();
 renderColumnToggles();
+initFiltersPanel();
 initSplitter();
 initSnippetHeight();
 initPatchHeight();
