@@ -1,0 +1,51 @@
+[
+  {
+    "name": "db_001_detects_prisma_query",
+    "rule_id": "NFR-DB-001",
+    "file": "repo.ts",
+    "content": "export async function getUsers(prisma){ return prisma.user.findMany({ take: 50 }); }\n",
+    "expected_match_lines": [1]
+  },
+  {
+    "name": "db_002_detects_execute_sql_raw",
+    "rule_id": "NFR-DB-002",
+    "file": "data.cs",
+    "content": "public class D { public void Run(DbContext context){ context.Database.ExecuteSqlRaw(\"SELECT 1\"); } }\n",
+    "expected_match_lines": [1]
+  },
+  {
+    "name": "th_001_detects_loop_fetch_pattern",
+    "rule_id": "NFR-TH-001",
+    "file": "batch.js",
+    "content": "for (const id of ids) { fetch('/api/item/' + id); }\n",
+    "expected_match_lines": [1]
+  },
+  {
+    "name": "th_002_detects_interval_polling",
+    "rule_id": "NFR-TH-002",
+    "file": "poll.js",
+    "content": "setInterval(function(){ axios.get('/api/status'); }, 1000);\n",
+    "expected_match_lines": [1]
+  },
+  {
+    "name": "th_003_skips_debounced_input_call",
+    "rule_id": "NFR-TH-003",
+    "file": "ui.tsx",
+    "content": "const onInput = debounce((v) => axios.get('/api/search?q=' + v), 300);\n",
+    "expected_match_lines": []
+  },
+  {
+    "name": "db_001_detects_dapper_queryasync",
+    "rule_id": "NFR-DB-001",
+    "file": "repo.cs",
+    "content": "public class R { public async Task Run(IDbConnection c){ await c.QueryAsync<int>(\"select 1\"); } }\n",
+    "expected_match_lines": [1]
+  },
+  {
+    "name": "th_005_detects_task_whenall_fanout_http",
+    "rule_id": "NFR-TH-005",
+    "file": "fanout.cs",
+    "content": "public async Task Run(HttpClient client, IEnumerable<string> urls){ await Task.WhenAll(urls.Select(u => client.GetAsync(u))); }\n",
+    "expected_match_lines": [1]
+  }
+]

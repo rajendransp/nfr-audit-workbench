@@ -1,0 +1,282 @@
+[
+  {
+    "id": "NFR-FE-AJ-001",
+    "title": "AngularJS controller declaration in template",
+    "category": "maintainability",
+    "top_level_category": "front_end",
+    "sub_category": "migration",
+    "severity": "S2",
+    "pattern": "\\bng-controller\\s*=\\s*[\"'][^\"']+[\"']",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.html",
+      "*.htm"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**"
+    ],
+    "rationale": "Template-level controllers imply AngularJS scope inheritance. Migration should map each region to an Angular component boundary while preserving DOM structure and CSS class hooks.",
+    "confidence_hint": 0.95,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-FE-AJ-002",
+    "title": "AngularJS two-way binding with ng-model",
+    "category": "maintainability",
+    "top_level_category": "front_end",
+    "sub_category": "migration",
+    "severity": "S2",
+    "pattern": "\\bng-model\\s*=\\s*[\"'][^\"']+[\"']",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.html",
+      "*.htm"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**"
+    ],
+    "rationale": "ng-model patterns should migrate to Angular Forms APIs (reactive or template-driven) without changing existing input names, labels, or layout wrappers to avoid UI regressions.",
+    "confidence_hint": 0.95,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-FE-AJ-003",
+    "title": "AngularJS scope object usage",
+    "category": "maintainability",
+    "top_level_category": "front_end",
+    "sub_category": "migration",
+    "severity": "S2",
+    "pattern": "\\$(scope|rootScope)\\b",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.js",
+      "*.ts"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**"
+    ],
+    "rationale": "Direct scope mutation should migrate to component class state and explicit Input/Output contracts. Preserve rendered element IDs/classes and binding names where possible.",
+    "confidence_hint": 0.9,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-FE-AJ-004",
+    "title": "AngularJS module controller registration",
+    "category": "maintainability",
+    "top_level_category": "front_end",
+    "sub_category": "migration",
+    "severity": "S2",
+    "pattern": "\\bangular\\.module\\s*\\([^\\)]*\\)\\s*\\.controller\\s*\\(",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.js",
+      "*.ts"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**"
+    ],
+    "rationale": "Module/controller registrations map to Angular components and standalone features. Keep template HTML/CSS contracts stable first, then refactor internals incrementally.",
+    "confidence_hint": 0.95,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-FE-AJ-005",
+    "title": "AngularJS directive with compile/link or replace:true",
+    "category": "maintainability",
+    "top_level_category": "front_end",
+    "sub_category": "migration",
+    "severity": "S1",
+    "pattern": "\\b\\.directive\\s*\\([^\\)]*\\)\\s*[\\s\\S]{0,800}\\b(compile\\s*:|link\\s*:|replace\\s*:\\s*true|transclude\\s*:\\s*[\"']element[\"'])",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.js",
+      "*.ts"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**"
+    ],
+    "rationale": "Complex directives often perform structural DOM manipulation. Migrate to Angular components/directives with minimal markup churn and preserve host element/class semantics.",
+    "confidence_hint": 0.75,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-FE-AJ-006",
+    "title": "AngularJS dynamic template compilation with $compile",
+    "category": "reliability",
+    "top_level_category": "front_end",
+    "sub_category": "migration",
+    "severity": "S1",
+    "pattern": "\\$compile\\s*\\(",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.js",
+      "*.ts"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**"
+    ],
+    "rationale": "Runtime template compilation is high-risk during migration. Prefer explicit components and safe bindings, preserving visible layout and CSS selectors.",
+    "confidence_hint": 0.95,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-FE-AJ-007",
+    "title": "AngularJS list rendering without stable identity (ng-repeat track by)",
+    "category": "performance",
+    "top_level_category": "front_end",
+    "sub_category": "migration",
+    "severity": "S3",
+    "pattern": "\\bng-repeat\\s*=\\s*[\"'][^\"']+(?![^\"']*\\btrack\\s+by\\b)[^\"']*[\"']",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.html",
+      "*.htm"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**"
+    ],
+    "rationale": "Stable identity in list rendering helps preserve row-level UI state across migration. Map to Angular @for/track or *ngFor trackBy to avoid DOM churn.",
+    "confidence_hint": 0.8,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-FE-AJ-008",
+    "title": "AngularJS router configuration (ngRoute/ui-router)",
+    "category": "maintainability",
+    "top_level_category": "front_end",
+    "sub_category": "migration",
+    "severity": "S2",
+    "pattern": "\\b(\\$routeProvider|\\$stateProvider|\\.state\\s*\\()\\b",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.js",
+      "*.ts"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**"
+    ],
+    "rationale": "Legacy routing config needs Angular Router equivalents. Keep URL paths, route params, and major layout outlets stable to preserve UX and deep links.",
+    "confidence_hint": 0.9,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-FE-AJ-009",
+    "title": "AngularJS view placeholders in templates",
+    "category": "maintainability",
+    "top_level_category": "front_end",
+    "sub_category": "migration",
+    "severity": "S2",
+    "pattern": "\\b(ng-view|ui-view|ng-include)\\b",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.html",
+      "*.htm"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**"
+    ],
+    "rationale": "View placeholders should be mapped to router outlets or component composition while preserving shell layout and existing CSS container hierarchy.",
+    "confidence_hint": 0.9,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-FE-AJ-010",
+    "title": "AngularJS filters in template expressions",
+    "category": "maintainability",
+    "top_level_category": "front_end",
+    "sub_category": "migration",
+    "severity": "S3",
+    "pattern": "\\{\\{[^\\}]{0,220}\\|\\s*[A-Za-z_][A-Za-z0-9_]*[^\\}]*\\}\\}",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.html",
+      "*.htm"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**"
+    ],
+    "rationale": "AngularJS filters require pipe/function mapping in Angular. Preserve displayed format and locale behavior to avoid visible UI drift.",
+    "confidence_hint": 0.7,
+    "enforcement_level": "review"
+  }
+]

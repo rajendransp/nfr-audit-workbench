@@ -365,6 +365,11 @@ def parse_args():
         help="Demote noisy rules in LLM prioritization using historical quality stats.",
     )
     parser.add_argument(
+        "--no-quality-history-in-report",
+        action="store_true",
+        help="Hide historical rule-quality aggregates/trend from findings JSON summary and markdown digest.",
+    )
+    parser.add_argument(
         "--rule-quality-file",
         default="rule_quality.json",
         help="Rule quality scoreboard file (relative to output dir unless absolute path).",
@@ -617,6 +622,55 @@ def _degrade_severity(value):
     if sev == "S3":
         return "S4"
     return "S4"
+
+
+def _normalize_finding_language(text, rule_id=""):
+    msg = str(text or "")
+    rid = str(rule_id or "").upper()
+    if rid in {"NFR-TH-008A", "NFR-TH-008B", "NFR-IO-LOOP-001"}:
+        msg = re.sub(r"\bN\+1(?:\s+query)?\s+pattern\b", "sequential loop-triggered execution pattern", msg, flags=re.IGNORECASE)
+        msg = re.sub(r"\bN\+1\s+database\s+round-?trips?\b", "sequential loop-triggered database round-trips", msg, flags=re.IGNORECASE)
+        msg = re.sub(r"\bN\+1\b", "sequential loop-triggered execution", msg, flags=re.IGNORECASE)
+    return msg
+
+
+def _apply_contextual_severity_policy(finding, severity):
+    sev = str(severity or "S3").upper()
+    if sev not in SEVERITY_ORDER:
+        sev = "S3"
+    ctx = str((finding or {}).get("execution_context") or _execution_context_of(finding)).strip().lower()
+    rid = str((finding or {}).get("rule_id") or "").upper()
+    if ctx == "migration_admin" and rid in {"NFR-TH-008A", "NFR-TH-008B", "NFR-IO-LOOP-001", "NFR-TH-004"}:
+        return _degrade_severity(sev), "migration_admin_downshift"
+    return sev, "none"
+
+
+def _patch_safety_note_for_item(item):
+    review = (item or {}).get("llm_review", {}) or {}
+    attention = str(review.get("patch_attention", "unavailable") or "unavailable").lower()
+    reason = str(review.get("patch_attention_reason", "") or "").lower()
+    if attention == "unavailable" and reason == "no_patch":
+        return "Patch safety: auto-patch unavailable; manual review required (architectural or DB-specific change)."
+    return ""
+
+
+def _build_sarif_message(item, review):
+    rid = str((item or {}).get("rule_id", "")).upper()
+    recommendation = str((review or {}).get("recommendation", "") or "")
+    if recommendation:
+        recommendation = recommendation.splitlines()[0].strip()
+    action_map = {
+        "NFR-TH-008A": "Batch or coalesce loop-triggered DB execution to reduce concurrency amplification.",
+        "NFR-TH-008B": "Batch or coalesce loop-triggered DB execution to reduce concurrency amplification.",
+        "NFR-IO-LOOP-001": "Reduce loop-triggered I/O by batching, caching, or request coalescing.",
+        "NFR-API-001": "Propagate CancellationToken through outbound async calls.",
+    }
+    base = action_map.get(rid, recommendation or "Address the flagged reliability/performance risk in this code path.")
+    base = _normalize_finding_language(base, rid)
+    note = _patch_safety_note_for_item(item)
+    if note:
+        return f"{base} {note}"
+    return base
 
 
 def _coerce_float(value, default):
@@ -2379,6 +2433,7 @@ def _build_policy_blocked_result(finding, policy_mode, policy_risk, external_bou
         "patch_attention_reason": "policy_blocked",
     }
     finding_out = dict(finding)
+    finding_out["execution_context"] = str(finding.get("execution_context") or _execution_context_of(finding))
     finding_out["llm_review"] = parsed
     finding_out["llm_transport"] = {
         "attempts": 0,
@@ -2405,6 +2460,16 @@ def _build_policy_blocked_result(finding, policy_mode, policy_risk, external_bou
 
 def _patch_playbook_for_rule(rule_id):
     rid = str(rule_id or "").upper()
+    if rid.startswith("NFR-DB-"):
+        return (
+            "Treat as DB access pressure analysis. Prefer minimal changes: propagate CancellationToken, set explicit timeouts, "
+            "avoid per-item query loops, and consider caching/coalescing for repeated reads."
+        )
+    if rid.startswith("NFR-TH-"):
+        return (
+            "Treat as load-amplification risk. Prefer bounded concurrency, request coalescing/dedup, jittered polling/backoff, "
+            "and batching. Do not claim thundering herd as definitive unless snippet shows synchronized fan-out behavior."
+        )
     playbooks = {
         "NFR-DOTNET-003": "Prefer async/await over .Result/.Wait/GetAwaiter().GetResult(). Update signatures to async Task and propagate await safely.",
         "NFR-DOTNET-001": "Add CancellationToken parameter (ct) and pass ct to HttpClient async methods. Avoid CancellationToken.None in request paths.",
@@ -2414,6 +2479,16 @@ def _patch_playbook_for_rule(rule_id):
         "NFR-API-004B": "Keep serializer contract consistent. Do not auto-switch APIs unless settings compatibility is preserved.",
         "NFR-FE-005A": "For dynamic HTML sources, sanitize with DOMPurify before assigning to innerHTML/dangerouslySetInnerHTML.",
         "NFR-FE-005B": "If raw HTML usage is required, sanitize; otherwise prefer textContent or safe render APIs.",
+        "NFR-FE-AJ-001": "Replace ng-controller regions with Angular components while preserving existing DOM hierarchy, class names, IDs, and test selectors.",
+        "NFR-FE-AJ-002": "Map ng-model bindings to Angular Forms (ReactiveFormsModule or template-driven) and keep control names/labels/wrappers stable for UI parity.",
+        "NFR-FE-AJ-003": "Move $scope/$rootScope state to component inputs/outputs/services. Avoid broad behavior changes; keep rendered markup contracts intact.",
+        "NFR-FE-AJ-004": "Convert angular.module(...).controller(...) to Angular components/standalone features. Prefer incremental migration with unchanged templates first.",
+        "NFR-FE-AJ-005": "Refactor complex directives (compile/link/replace/transclude) to Angular directives/components with minimal structural HTML changes.",
+        "NFR-FE-AJ-006": "Eliminate $compile runtime templates. Prefer explicit components or ngTemplateOutlet and safe bindings while preserving visible UI output.",
+        "NFR-FE-AJ-007": "Ensure stable list identity (track by / track) to prevent DOM churn and UI state loss during migration.",
+        "NFR-FE-AJ-008": "Map ngRoute/ui-router states to Angular Router routes while preserving URLs, params, guards, and layout outlets.",
+        "NFR-FE-AJ-009": "Replace ng-view/ui-view/ng-include with router outlets or component composition while preserving shell container structure.",
+        "NFR-FE-AJ-010": "Map AngularJS filters to Angular pipes or equivalent formatting utilities, preserving locale/formatting behavior.",
         "NFR-DOTNET-014": "Replace empty catch with explicit logging and rethrow unless swallowing is intentional and documented.",
     }
     return playbooks.get(rid, "Keep patch minimal, local, and compile-safe. Avoid changing public signatures unless required.")
@@ -2967,6 +3042,24 @@ def _review_single_finding(
             "If a string payload is required, keep synchronous serialization and optimize by reusing serializer options "
             "and avoiding serialize-deserialize round trips in hot paths."
         )
+    if str(finding.get("rule_id", "")).startswith("NFR-FE-AJ-"):
+        rule_guidance = (
+            "Primary objective: remove AngularJS dependency by either migrating this code to latest Angular or deleting/replacing "
+            "the AngularJS usage when it is redundant. Prioritize UI parity: preserve DOM structure, CSS classes/IDs, route URLs, "
+            "bindings displayed to users, and existing interaction behavior. If proposing removal, explain why behavior remains intact "
+            "and what Angular/native replacement preserves the current UX."
+        )
+    if str(finding.get("rule_id", "")).startswith("NFR-TH-"):
+        rule_guidance = (
+            "Classify this as load-amplification risk first. Use 'thundering herd' only when snippet evidence suggests synchronized "
+            "fan-out/polling or burst concurrency patterns. Otherwise describe as potential amplification under concurrency and suggest "
+            "bounded concurrency, caching, coalescing, deduplication, and jittered retry/polling."
+        )
+    if str(finding.get("rule_id", "")).startswith("NFR-DB-"):
+        rule_guidance = (
+            "Treat direct DB call detection as inventory/risk context, not automatic defect. Confirm issue only when snippet evidence "
+            "shows scalability/reliability impact (for example repeated queries, missing cancellation/timeout, or hot-path pressure)."
+        )
     rule_payload = {
         "id": finding["rule_id"],
         "title": finding["rule_title"],
@@ -2994,6 +3087,8 @@ def _review_single_finding(
     attempts_used = 0
     usage_total = _empty_token_usage()
     attempts_total = max(0, int(retries)) + 1
+    parse_retry_used = False
+    last_raw_output = ""
     for attempt in range(1, attempts_total + 1):
         attempts_used = attempt
         try:
@@ -3007,6 +3102,7 @@ def _review_single_finding(
                 connect_timeout_seconds,
                 read_timeout_seconds,
             )
+            last_raw_output = str(content or "")
             _accumulate_token_usage(usage_total, usage)
             parsed = _extract_json(content)
             if attempt > 1:
@@ -3018,13 +3114,26 @@ def _review_single_finding(
             break
         except Exception as exc:
             retriable, error_kind = _classify_llm_error(exc)
+            if error_kind == "parse_error":
+                preview = re.sub(r"\s+", " ", str(last_raw_output or "")).strip()[:200]
+                if preview:
+                    log_progress(
+                        f"{provider_label} parse_error preview for {finding.get('rule_id', 'unknown')} at "
+                        f"{finding.get('file', 'unknown')}:{finding.get('line', 1)}: {preview}"
+                    )
+                if not parse_retry_used and attempt < attempts_total:
+                    parse_retry_used = True
+                    retriable = True
             last_error_kind = error_kind
             context = (
                 f"{finding.get('rule_id', 'unknown')} at "
                 f"{finding.get('file', 'unknown')}:{finding.get('line', 1)}"
             )
             if retriable and attempt < attempts_total:
-                delay = max(0.0, float(retry_backoff_seconds)) * (2 ** (attempt - 1))
+                if error_kind == "parse_error":
+                    delay = max(0.5, float(retry_backoff_seconds or 1.0))
+                else:
+                    delay = max(0.0, float(retry_backoff_seconds)) * (2 ** (attempt - 1))
                 log_progress(
                     f"{provider_label} request failed ({error_kind}) for {context}. "
                     f"Attempt {attempt}/{attempts_total}. Retrying in {delay:.1f}s. Error: {exc}"
@@ -3055,17 +3164,27 @@ def _review_single_finding(
     sev = str(parsed.get("severity") or finding["default_severity"] or "S3").upper()
     if sev not in SEVERITY_ORDER:
         sev = "S3"
-    parsed["severity"] = sev
+    adjusted_sev, policy_applied = _apply_contextual_severity_policy(finding, sev)
+    parsed["severity"] = adjusted_sev
+    parsed["severity_policy"] = {
+        "execution_context": str(finding.get("execution_context") or _execution_context_of(finding)),
+        "applied": policy_applied,
+        "original_severity": sev,
+        "adjusted_severity": adjusted_sev,
+    }
+    parsed["title"] = _normalize_finding_language(parsed.get("title", ""), finding.get("rule_id", ""))
+    parsed["why"] = _normalize_finding_language(parsed.get("why", ""), finding.get("rule_id", ""))
+    parsed["recommendation"] = _normalize_finding_language(parsed.get("recommendation", ""), finding.get("rule_id", ""))
     parsed["effort"] = _normalize_effort(parsed.get("effort"))
-    parsed["benefit"] = _normalize_benefit(parsed.get("benefit"), sev)
+    parsed["benefit"] = _normalize_benefit(parsed.get("benefit"), adjusted_sev)
     parsed["changed_lines_reason"] = str(parsed.get("changed_lines_reason", "") or "").strip()
     if "quick_win" not in parsed:
-        parsed["quick_win"] = _infer_quick_win(sev, parsed["effort"], parsed["benefit"])
+        parsed["quick_win"] = _infer_quick_win(adjusted_sev, parsed["effort"], parsed["benefit"])
     else:
         parsed["quick_win"] = bool(parsed.get("quick_win"))
     parsed = _post_llm_false_positive_gate(parsed, finding, fallback_used=fallback_used)
     current_conf = _confidence_for_patch_retry(parsed, finding)
-    if sev not in {"S1", "S2"} and current_conf < float(patch_min_confidence or 0.0):
+    if adjusted_sev not in {"S1", "S2"} and current_conf < float(patch_min_confidence or 0.0):
         parsed["patch"] = "unknown"
         parsed["changed_lines_reason"] = ""
         parsed["patch_policy"] = "confidence_gated"
@@ -3156,6 +3275,7 @@ def _review_single_finding(
     parsed["patch_attention_reason"] = patch_attention_reason
 
     finding_out = dict(finding)
+    finding_out["execution_context"] = str(finding.get("execution_context") or _execution_context_of(finding))
     finding_out["llm_review"] = parsed
     finding_out["llm_transport"] = {
         "attempts": attempts_used,
@@ -3582,9 +3702,101 @@ def _module_key(path):
     return "unknown"
 
 
+def _execution_context_of(item):
+    file_path = str((item or {}).get("file", "") or "").replace("\\", "/").lower()
+    snippet = str((item or {}).get("snippet", "") or "").lower()
+    combined = f"{file_path} {snippet}"
+    migration_hints = (
+        "/migrations/",
+        "migration",
+        "schema",
+        "updater",
+        "upgrade",
+        "seed",
+        "installer",
+        "setup",
+    )
+    background_hints = (
+        "backgroundservice",
+        "ihostedservice",
+        "worker",
+        "hangfire",
+        "quartz",
+        "job",
+        "scheduler",
+    )
+    request_hints = (
+        "controller",
+        "endpoint",
+        "minimalapi",
+        "httpcontext",
+        "request",
+        "actionresult",
+        ".razor",
+        ".cshtml",
+        "/api/",
+    )
+    if any(h in combined for h in migration_hints):
+        return "migration_admin"
+    if any(h in combined for h in background_hints):
+        return "background_job"
+    if any(h in combined for h in request_hints):
+        return "request_path"
+    return "unknown"
+
+
+def _angular_migration_bucket(item):
+    rid = str((item or {}).get("rule_id", "")).upper()
+    if not rid.startswith("NFR-FE-AJ-"):
+        return ""
+    review = (item or {}).get("llm_review", {}) or {}
+    text = " ".join(
+        [
+            str(review.get("title", "") or ""),
+            str(review.get("why", "") or ""),
+            str(review.get("recommendation", "") or ""),
+            str((item or {}).get("rule_title", "") or ""),
+            str((item or {}).get("rationale", "") or ""),
+        ]
+    ).lower()
+    remove_markers = (
+        "remove angularjs",
+        "remove ng-",
+        "drop angularjs",
+        "eliminate angularjs",
+        "delete angularjs",
+        "no longer needed",
+        "replace with native",
+        "without angularjs",
+        "remove dependency",
+    )
+    migrate_markers = (
+        "migrate",
+        "convert",
+        "rewrite",
+        "refactor",
+        "latest angular",
+        "angular component",
+        "angular directive",
+        "angular router",
+        "reactive form",
+        "template-driven form",
+        "pipe",
+    )
+    if any(m in text for m in remove_markers):
+        return "remove-angularjs-dependency"
+    if any(m in text for m in migrate_markers):
+        return "migrate-to-angular"
+    return "needs-manual-review"
+
+
 def summarize(reviewed):
     for item in reviewed:
         item["trust_tier"] = trust_tier_of(item)
+        item["execution_context"] = _execution_context_of(item)
+        bucket = _angular_migration_bucket(item)
+        if bucket:
+            item["angular_migration_bucket"] = bucket
     confirmed = [x for x in reviewed if bool(x.get("llm_review", {}).get("isIssue", False))]
     fallback_findings = [x for x in reviewed if bool((x.get("llm_transport", {}) or {}).get("fallback_used", False))]
 
@@ -3604,10 +3816,46 @@ def summarize(reviewed):
     by_severity = Counter(severity_of(x) for x in confirmed)
     by_source = Counter(x.get("source", "unknown") for x in confirmed)
     by_trust_tier = Counter(x.get("trust_tier", "unknown") for x in confirmed)
+    by_execution_context = Counter(x.get("execution_context", "unknown") for x in confirmed)
     by_action_bucket = Counter(x.get("action_bucket", "app_code") for x in confirmed)
     by_language = Counter(x.get("language", "unknown") for x in confirmed)
     by_file_type = Counter(x.get("file_type", "unknown") for x in confirmed)
-    rule_quality = build_rule_quality_scoreboard(reviewed)
+    angular_confirmed = [x for x in confirmed if str(x.get("rule_id", "")).upper().startswith("NFR-FE-AJ-")]
+    angular_migration_counts = Counter(x.get("angular_migration_bucket", "needs-manual-review") for x in angular_confirmed)
+    for k in ("migrate-to-angular", "remove-angularjs-dependency", "needs-manual-review"):
+        angular_migration_counts.setdefault(k, 0)
+    def _compact_angular_migration_item(x):
+        review = (x.get("llm_review", {}) or {})
+        return {
+            "finding_key": x.get("finding_key", ""),
+            "rule_id": x.get("rule_id", "unknown"),
+            "file": x.get("file", "unknown"),
+            "line": int(x.get("line", 1) or 1),
+            "severity": review.get("severity", x.get("default_severity", "S3")),
+            "confidence": review.get("confidence", 0.0),
+            "title": review.get("title", x.get("rule_title", "")),
+            "recommendation": review.get("recommendation", ""),
+            "bucket": x.get("angular_migration_bucket", "needs-manual-review"),
+        }
+
+    angular_migration_groups = {
+        "migrate-to-angular": [
+            _compact_angular_migration_item(x)
+            for x in angular_confirmed
+            if x.get("angular_migration_bucket") == "migrate-to-angular"
+        ],
+        "remove-angularjs-dependency": [
+            _compact_angular_migration_item(x)
+            for x in angular_confirmed
+            if x.get("angular_migration_bucket") == "remove-angularjs-dependency"
+        ],
+        "needs-manual-review": [
+            _compact_angular_migration_item(x)
+            for x in angular_confirmed
+            if x.get("angular_migration_bucket") == "needs-manual-review"
+        ],
+    }
+    rule_quality_run = build_rule_quality_scoreboard(reviewed)
     patch_quality = Counter(str((x.get("llm_review", {}) or {}).get("patch_quality", "unknown")).lower() for x in reviewed)
     patch_attention = Counter(str((x.get("llm_review", {}) or {}).get("patch_attention", "unavailable")).lower() for x in reviewed)
     patch_generated = sum(
@@ -3646,10 +3894,14 @@ def summarize(reviewed):
         "by_severity": dict(by_severity),
         "by_source": dict(by_source),
         "by_trust_tier": dict(by_trust_tier),
+        "by_execution_context": dict(by_execution_context),
         "by_action_bucket": dict(by_action_bucket),
         "by_language": dict(by_language),
         "by_file_type": dict(by_file_type),
-        "rule_quality": rule_quality,
+        "angular_migration_counts": dict(angular_migration_counts),
+        "angular_migration_groups": angular_migration_groups,
+        "rule_quality": rule_quality_run,
+        "rule_quality_run": rule_quality_run,
         "patch_metrics": patch_metrics,
         "ai_policy_metrics": ai_policy_metrics,
         "app_fix_backlog_count": sum(1 for x in confirmed if x.get("action_bucket", "app_code") != "dependency_risk"),
@@ -3721,31 +3973,41 @@ def load_queue_report(path):
 
 def write_json_report(summary_data, output_dir, roslyn_meta, scan_meta, pointers_dir=None):
     output_path = Path(output_dir) / scan_meta["findings_file"]
+    include_quality_history = bool(summary_data.get("include_quality_history_in_report", True))
+    summary_payload = {
+        "total_reviewed": len(summary_data["all_reviewed"]),
+        "confirmed_issues": len(summary_data["confirmed"]),
+        "fallback_findings": len(summary_data.get("fallback_findings", [])),
+        "by_severity": summary_data["by_severity"],
+        "by_category": summary_data["by_category"],
+        "by_module": summary_data["by_module"],
+        "by_source": summary_data["by_source"],
+        "by_trust_tier": summary_data.get("by_trust_tier", {}),
+        "by_execution_context": summary_data.get("by_execution_context", {}),
+        "by_action_bucket": summary_data.get("by_action_bucket", {}),
+        "by_language": summary_data["by_language"],
+        "by_file_type": summary_data["by_file_type"],
+        "angular_migration_counts": summary_data.get("angular_migration_counts", {}),
+        "angular_migration_groups": summary_data.get("angular_migration_groups", {}),
+        "throughput": summary_data.get("throughput", {}),
+        "llm_token_usage": summary_data.get("llm_token_usage", {}),
+        "llm_cost_estimate": summary_data.get("llm_cost_estimate", {}),
+        "rule_quality_scope": summary_data.get("rule_quality_scope", "run_only"),
+        "rule_quality": summary_data.get("rule_quality", {}),
+        "rule_quality_run": summary_data.get("rule_quality_run", summary_data.get("rule_quality", {})),
+        "patch_metrics": summary_data.get("patch_metrics", {}),
+        "ai_policy_metrics": summary_data.get("ai_policy_metrics", {}),
+        "rule_pipeline_stats": summary_data.get("rule_pipeline_stats", {}),
+        "rule_noise_recommendations": summary_data.get("rule_noise_recommendations", []),
+        "app_fix_backlog_count": summary_data.get("app_fix_backlog_count", 0),
+        "dependency_risk_count": summary_data.get("dependency_risk_count", 0),
+    }
+    if include_quality_history:
+        summary_payload["rule_quality_historical"] = summary_data.get("rule_quality_historical", {})
+        summary_payload["rule_quality_history_meta"] = summary_data.get("rule_quality_history_meta", {})
+        summary_payload["rule_precision_trend"] = summary_data.get("rule_precision_trend", {})
     payload = {
-        "summary": {
-            "total_reviewed": len(summary_data["all_reviewed"]),
-            "confirmed_issues": len(summary_data["confirmed"]),
-            "fallback_findings": len(summary_data.get("fallback_findings", [])),
-            "by_severity": summary_data["by_severity"],
-            "by_category": summary_data["by_category"],
-            "by_module": summary_data["by_module"],
-            "by_source": summary_data["by_source"],
-            "by_trust_tier": summary_data.get("by_trust_tier", {}),
-            "by_action_bucket": summary_data.get("by_action_bucket", {}),
-            "by_language": summary_data["by_language"],
-            "by_file_type": summary_data["by_file_type"],
-            "throughput": summary_data.get("throughput", {}),
-            "llm_token_usage": summary_data.get("llm_token_usage", {}),
-            "llm_cost_estimate": summary_data.get("llm_cost_estimate", {}),
-            "rule_quality": summary_data.get("rule_quality", {}),
-            "patch_metrics": summary_data.get("patch_metrics", {}),
-            "ai_policy_metrics": summary_data.get("ai_policy_metrics", {}),
-            "rule_precision_trend": summary_data.get("rule_precision_trend", {}),
-            "rule_pipeline_stats": summary_data.get("rule_pipeline_stats", {}),
-            "rule_noise_recommendations": summary_data.get("rule_noise_recommendations", []),
-            "app_fix_backlog_count": summary_data.get("app_fix_backlog_count", 0),
-            "dependency_risk_count": summary_data.get("dependency_risk_count", 0),
-        },
+        "summary": summary_payload,
         "scan": scan_meta,
         "roslyn": roslyn_meta,
         "findings": summary_data["all_reviewed"],
@@ -3935,182 +4197,235 @@ def write_safe_ai_risk_sarif(risk_payload, output_dir, scan_meta, pointers_dir=N
 
 def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta, pointers_dir=None):
     path = Path(output_dir) / scan_meta["digest_file"]
-    confirmed = summary_data["confirmed"]
+    confirmed = list(summary_data.get("confirmed", []) or [])
+    reviewed = list(summary_data.get("all_reviewed", []) or [])
+    fallback_items = list(summary_data.get("fallback_findings", []) or [])
+    by_sev = summary_data.get("by_severity", {}) or {}
+    quality = summary_data.get("rule_quality_run", summary_data.get("rule_quality", {})) or {}
+    no_patch_items = [
+        x
+        for x in reviewed
+        if str(((x.get("llm_review", {}) or {}).get("patch_attention", "unavailable")).lower()) == "unavailable"
+        and str(((x.get("llm_review", {}) or {}).get("patch_attention_reason", "")).lower()) == "no_patch"
+    ]
+
+    reviewed_count = len(reviewed)
+    confirmed_count = len(confirmed)
+    false_positive_count = max(0, reviewed_count - confirmed_count)
+    manual_attention_count = len(fallback_items)
+
+    regex_based = 0
+    llm_confirmed_only = 0
+    hybrid = 0
+    for item in confirmed:
+        src = str(item.get("source", "unknown")).lower()
+        tier = str(item.get("trust_tier", "")).lower()
+        if src == "regex" and tier == "regex_only":
+            regex_based += 1
+        elif src == "regex" and tier in {"llm_confirmed", "fast_routed", "fallback"}:
+            hybrid += 1
+        elif tier in {"llm_confirmed", "fast_routed"}:
+            llm_confirmed_only += 1
+
+    s1_items = [x for x in confirmed if str((x.get("llm_review", {}) or {}).get("severity", x.get("default_severity", "S3"))).upper() == "S1"]
+    s2_items = [x for x in confirmed if str((x.get("llm_review", {}) or {}).get("severity", x.get("default_severity", "S3"))).upper() == "S2"]
 
     lines = []
-    lines.append("# NFR Risk Digest")
+    lines.append("# NFR DIGEST - TEMPLATE v2")
     lines.append("")
-    lines.append(f"- Reviewed findings: {len(summary_data['all_reviewed'])}")
-    lines.append(f"- Confirmed issues: {len(confirmed)}")
-    lines.append(f"- Fallback-LLM findings: {len(summary_data.get('fallback_findings', []))}")
-    lines.append(f"- Severity split: {summary_data['by_severity']}")
-    lines.append(f"- Source split: {summary_data['by_source']}")
-    lines.append(f"- Trust-tier split: {summary_data.get('by_trust_tier', {})}")
-    lines.append(f"- Action bucket split: {summary_data.get('by_action_bucket', {})}")
-    lines.append(f"- App-fix backlog count: {summary_data.get('app_fix_backlog_count', 0)}")
-    lines.append(f"- Dependency-risk count: {summary_data.get('dependency_risk_count', 0)}")
-    lines.append(f"- Patch metrics: {summary_data.get('patch_metrics', {})}")
-    lines.append(f"- Safe AI policy metrics: {summary_data.get('ai_policy_metrics', {})}")
-    if summary_data.get("throughput"):
-        lines.append(f"- Throughput: {summary_data.get('throughput')}")
-    if summary_data.get("llm_token_usage"):
-        lines.append(f"- LLM token usage: {summary_data.get('llm_token_usage')}")
-    if summary_data.get("llm_cost_estimate"):
-        lines.append(f"- LLM cost estimate: {summary_data.get('llm_cost_estimate')}")
+    lines.append("(Run-based, technically precise, safe-fix oriented)")
     lines.append("")
-
-    lines.append("## Roslyn")
+    lines.append("## 1. Run Summary")
     lines.append("")
-    lines.append(f"- Enabled: {roslyn_meta.get('enabled', False)}")
-    lines.append(f"- Executed: {roslyn_meta.get('executed', False)}")
-    lines.append(f"- Findings imported: {roslyn_meta.get('imported_findings', 0)}")
-    if roslyn_meta.get("note"):
-        lines.append(f"- Note: {roslyn_meta.get('note')}")
+    lines.append(f"Repository: {scan_meta.get('project', 'unknown')}")
+    lines.append(f"Ruleset Version: {scan_meta.get('ruleset', 'unknown')}")
+    lines.append("Scan Scope: run_only")
+    lines.append(f"Scan Timestamp: {scan_meta.get('run_version', datetime.now().strftime('%Y%m%d_%H%M%S'))}")
+    lines.append("")
+    lines.append("Findings Summary")
+    lines.append("")
+    lines.append("| Metric | Count |")
+    lines.append("| --- | ---: |")
+    lines.append(f"| Reviewed findings | {reviewed_count} |")
+    lines.append(f"| Confirmed findings | {confirmed_count} |")
+    lines.append(f"| False positives | {false_positive_count} |")
+    lines.append(f"| Manual attention required | {manual_attention_count} |")
+    lines.append("")
+    lines.append("Definition:")
+    lines.append("- Reviewed = total findings evaluated in this run")
+    lines.append("- Confirmed = findings validated as real technical risks")
+    lines.append("- Manual attention = findings where automated analysis could not confidently determine correctness")
     lines.append("")
 
-    lines.append("## Executive Summary (Top 5)")
+    lines.append("## 2. Severity Breakdown (Confirmed Findings Only)")
     lines.append("")
-    top = confirmed[:5]
-    if not top:
-        lines.append("No confirmed issues.")
-    for idx, item in enumerate(top, start=1):
-        review = item["llm_review"]
-        lines.append(
-            f"{idx}. [{review.get('severity', item['default_severity'])}] {review.get('title', item['rule_title'])} - `{item['file']}:{item['line']}`"
-        )
-        lines.append(f"   Source: {item.get('source', 'unknown')}")
-        lines.append(f"   Impact: {review.get('why', 'N/A')}")
-        lines.append(f"   Fix: {review.get('recommendation', 'N/A')}")
+    lines.append("| Severity | Count | Meaning |")
+    lines.append("| --- | ---: | --- |")
+    lines.append(f"| S1 | {int(by_sev.get('S1', 0) or 0)} | Definite scalability / reliability risk; fix required |")
+    lines.append(f"| S2 | {int(by_sev.get('S2', 0) or 0)} | Real issue or design smell; fix recommended |")
+    lines.append(f"| S3 | {int(by_sev.get('S3', 0) or 0)} | Advisory / best practice |")
+    lines.append(f"| S4 | {int(by_sev.get('S4', 0) or 0)} | Informational |")
     lines.append("")
-
-    lines.append("## By Category")
-    lines.append("")
-    if summary_data["by_category"]:
-        for k, v in sorted(summary_data["by_category"].items(), key=lambda kv: (-kv[1], kv[0])):
-            lines.append(f"- {k}: {v}")
-    else:
-        lines.append("- None")
+    lines.append("Warning:")
+    lines.append("Severity reflects technical risk, not execution context.")
+    lines.append("Execution context (request path vs background job vs migration) must be evaluated during remediation.")
+    lines.append("Policy: migration_admin context downshifts one severity level for NFR-TH-008A/NFR-TH-008B/NFR-IO-LOOP-001/NFR-TH-004.")
     lines.append("")
 
-    lines.append("## By Module")
+    lines.append("## 3. Rule Quality Scoreboard (Run-only)")
     lines.append("")
-    if summary_data["by_module"]:
-        for k, v in sorted(summary_data["by_module"].items(), key=lambda kv: (-kv[1], kv[0]))[:20]:
-            lines.append(f"- {k}: {v}")
-    else:
-        lines.append("- None")
+    lines.append("Important:")
+    lines.append("This scoreboard reflects this scan run only.")
+    lines.append("It does not include historical or cross-run aggregation.")
     lines.append("")
-
-    lines.append("## Rule Quality Scoreboard")
-    lines.append("")
-    quality = summary_data.get("rule_quality", {})
+    lines.append("| Rule ID | Reviewed | Confirmed | Precision | Fallback Count |")
+    lines.append("| --- | ---: | ---: | ---: | ---: |")
     if quality:
-        for rid, stats in sorted(quality.items(), key=lambda kv: (-int(kv[1].get("reviewed", 0)), kv[0]))[:20]:
-            lines.append(
-                f"- {rid}: reviewed={stats.get('reviewed', 0)}, confirmed={stats.get('confirmed', 0)}, "
-                f"precision={stats.get('precision', 0.0)}, fallback_rate={stats.get('fallback_rate', 0.0)}, "
-                f"timeout_like_rate={stats.get('timeout_like_rate', 0.0)}"
-            )
-            top_fp = stats.get("top_false_positive_reasons", []) or []
-            if top_fp:
-                reason = top_fp[0].get("reason", "unspecified")
-                count = top_fp[0].get("count", 0)
-                lines.append(f"  - top_fp_reason: {reason} ({count})")
+        for rid, stats in sorted(quality.items(), key=lambda kv: (-int((kv[1] or {}).get("reviewed", 0)), kv[0]))[:30]:
+            reviewed_n = int((stats or {}).get("reviewed", 0) or 0)
+            confirmed_n = int((stats or {}).get("confirmed", 0) or 0)
+            precision = float((stats or {}).get("precision", 0.0) or 0.0)
+            fallback_n = int((stats or {}).get("fallback_count", 0) or 0)
+            lines.append(f"| {rid} | {reviewed_n} | {confirmed_n} | {precision:.4f} | {fallback_n} |")
     else:
-        lines.append("- None")
+        lines.append("| None | 0 | 0 | 0.0000 | 0 |")
+    lines.append("")
+    lines.append("Interpretation Guidelines:")
+    lines.append("- Precision = Confirmed / Reviewed for this run")
+    lines.append("- Fallback Count = cases where parsing/analysis failed and manual review was required")
+    lines.append("- Low precision does not automatically mean a bad rule; some rules are intentionally conservative (inventory, hardening)")
+    lines.append("- Low precision architectural rules are risk indicators and require context-aware triage, not blind dismissal.")
     lines.append("")
 
-    lines.append("## Rule Precision Trend (Current Run vs Historical)")
+    lines.append("## 4. Source Attribution (Confirmed Findings Only)")
     lines.append("")
-    trend = summary_data.get("rule_precision_trend", {})
-    if trend:
-        for rid, item in sorted(trend.items(), key=lambda kv: (kv[1].get("trend", "stable"), -kv[1].get("current_run_reviewed", 0), kv[0]))[:25]:
-            lines.append(
-                f"- {rid}: trend={item.get('trend', 'stable')}, "
-                f"prev={item.get('previous_precision', 0.0)}, "
-                f"current={item.get('current_run_precision', 0.0)}, "
-                f"delta={item.get('delta', 0.0)}, "
-                f"reviewed={item.get('current_run_reviewed', 0)}"
-            )
-    else:
-        lines.append("- None")
+    lines.append("| Detection Source | Count |")
+    lines.append("| --- | ---: |")
+    lines.append(f"| Regex-based | {regex_based} |")
+    lines.append(f"| LLM-confirmed | {llm_confirmed_only} |")
+    lines.append(f"| Hybrid | {hybrid} |")
+    lines.append("")
+    lines.append("Clarification:")
+    lines.append("Source attribution is shown only for confirmed findings, not for all reviewed findings.")
     lines.append("")
 
-    lines.append("## Fallback Governance")
+    lines.append("## 5. Key Findings (Validated)")
     lines.append("")
-
-    lines.append("## Noise Recommendations")
+    lines.append("### 5.1 S1 - Critical Technical Risks")
     lines.append("")
-    recs = summary_data.get("rule_noise_recommendations", [])
-    if recs:
-        for item in recs:
-            lines.append(
-                f"- {item.get('rule_id', 'unknown')}: action={item.get('recommended_action', 'monitor')}, "
-                f"precision={item.get('precision', 0.0)}, fallback_rate={item.get('fallback_rate', 0.0)}, "
-                f"reviewed={item.get('reviewed', 0)}"
-            )
-    else:
-        lines.append("- None")
+    lines.append("Pattern: Awaited DB calls inside loops (NFR-TH-008A)")
     lines.append("")
-    fallback_items = summary_data.get("fallback_findings", [])
-    if not fallback_items:
-        lines.append("- No fallback findings.")
-    else:
-        lines.append(f"- Findings requiring fallback/manual attention: {len(fallback_items)}")
-        for item in fallback_items[:20]:
-            lines.append(
-                f"- `{item.get('rule_id', 'unknown')}` at `{item.get('file', 'unknown')}:{item.get('line', 1)}` "
-                f"error_kind=`{item.get('llm_error_kind', '')}`"
-            )
+    lines.append("Why this matters (technical explanation):")
+    lines.append("- Causes sequential loop-triggered database round-trips")
+    lines.append("- Amplifies latency")
+    lines.append("- Can escalate to load amplification under concurrency if invoked by multiple requests/jobs")
     lines.append("")
-
-    lines.append("## Action Plan")
+    lines.append("Correct remediation strategies:")
+    lines.append("- Batch queries (IN, joins)")
+    lines.append("- Bulk operations")
+    lines.append("- Server-side aggregation")
+    lines.append("- Reduce per-iteration DB execution")
     lines.append("")
-    lines.append("### Quick Wins")
-    lines.append("- Propagate `CancellationToken` to HttpClient/EF Core async calls.")
-    lines.append("- Replace `.Result` / `.Wait()` and `Thread.Sleep()` in request paths.")
-    lines.append("- Replace `new HttpClient()` call-site allocation with `IHttpClientFactory`.")
-    lines.append("")
-    lines.append("### Structural Fixes")
-    lines.append("- Standardize timeout/retry/circuit-breaker policies per downstream.")
-    lines.append("- Add analyzer gating in CI for cancellation-token propagation and async hygiene.")
-    lines.append("- Correlate static findings with p95/p99 latency and timeout telemetry for prioritization.")
-    lines.append("")
-
-    lines.append("## Detailed Findings")
-    lines.append("")
-    if not confirmed:
-        lines.append("No confirmed issues.")
-    for item in confirmed:
-        review = item["llm_review"]
-        lines.append(f"### {review.get('title', item['rule_title'])}")
-        lines.append(f"- Source: `{item.get('source', 'unknown')}`")
-        lines.append(f"- Rule: `{item['rule_id']}`")
-        lines.append(f"- Severity: `{review.get('severity', item['default_severity'])}`")
-        lines.append(f"- Confidence: `{review.get('confidence', 0.0)}`")
-        lines.append(f"- Location: `{item['file']}:{item['line']}`")
-        lines.append(f"- Why: {review.get('why', 'N/A')}")
-        lines.append(f"- Recommendation: {review.get('recommendation', 'N/A')}")
-        changed_reason = str(review.get("changed_lines_reason", "") or "").strip()
-        if changed_reason:
-            lines.append(f"- Patch Change Reason: {changed_reason}")
-        notes = review.get("testing_notes", []) or []
-        if notes:
-            lines.append("- Testing Notes:")
-            for n in notes[:5]:
-                lines.append(f"  - {n}")
-        patch = review.get("patch", "unknown")
-        if isinstance(patch, str) and patch.strip() and patch.strip().lower() != "unknown":
-            lines.append("- Suggested Patch:")
-            lines.append("```diff")
-            lines.append(patch.strip())
-            lines.append("```")
+    lines.append("Important nuance:")
+    lines.append("This pattern is always a performance risk.")
+    lines.append("It becomes a thundering herd risk only if executed concurrently across requests/jobs.")
+    if s1_items:
         lines.append("")
+        lines.append("Examples from this run:")
+        for item in s1_items[:8]:
+            review = item.get("llm_review", {}) or {}
+            lines.append(
+                f"- `{item.get('rule_id','unknown')}` at `{item.get('file','unknown')}:{item.get('line',1)}` "
+                f"- {review.get('title', item.get('rule_title',''))}"
+            )
+    lines.append("")
 
-    path.write_text("\n".join(lines), encoding="utf-8")
+    lines.append("### 5.2 S2 - Reliability & Hardening Issues")
+    lines.append("")
+    lines.append("Pattern: Missing CancellationToken in outbound async calls (NFR-API-001)")
+    lines.append("")
+    lines.append("Why this matters:")
+    lines.append("- Prevents graceful cancellation")
+    lines.append("- Increases resource usage during shutdown/timeouts")
+    lines.append("- Can cause request pile-up under load")
+    lines.append("")
+    lines.append("Correct remediation:")
+    lines.append("- Add CancellationToken parameters")
+    lines.append("- Propagate from caller")
+    lines.append("- Do not introduce CancellationToken.None as a compliance shortcut")
+    if s2_items:
+        lines.append("")
+        lines.append("Examples from this run:")
+        for item in s2_items[:8]:
+            review = item.get("llm_review", {}) or {}
+            lines.append(
+                f"- `{item.get('rule_id','unknown')}` at `{item.get('file','unknown')}:{item.get('line',1)}` "
+                f"- {review.get('title', item.get('rule_title',''))}"
+            )
+    lines.append("")
+
+    lines.append("## 6. Patch Suggestions & Safety Notes")
+    lines.append("")
+    lines.append("Patch Safety Classification")
+    lines.append("")
+    lines.append("| Patch Type | Safety Level | Notes |")
+    lines.append("| --- | --- | --- |")
+    lines.append("| CancellationToken propagation | Safe | Requires signature changes |")
+    lines.append("| Loop-to-batch refactor | Manual | Structural refactor |")
+    lines.append("| Bulk DDL statements | Conditional | Driver & DB dependent |")
+    lines.append("| Introducing CancellationToken.None | Unsafe | Does not enable cancellation |")
+    lines.append("")
+    lines.append("Patch Safety Notes (Mandatory Reading):")
+    lines.append("- CancellationToken.None is not a fix. It does not improve cancellation or shutdown behavior.")
+    lines.append("- Multi-statement SQL commands may require driver support, connection string flags, and careful escaping.")
+    lines.append("- Sequential loop-triggered execution fixes cannot be safely auto-patched; they require domain-aware refactoring.")
+    lines.append("- Auto-patch unavailable items require manual review by module owners.")
+    lines.append(f"- patch_attention=no_patch count in this run: {len(no_patch_items)}.")
+    lines.append("- Recommended validation: confirm execution context (request/background/migration) and load test under concurrency.")
+    lines.append("")
+
+    lines.append("## 7. Known Limitations of This Report")
+    lines.append("")
+    lines.append("- Execution context tagging is heuristic; request/background/migration classification may require manual validation")
+    lines.append("- Structural refactors may not generate valid auto-patches")
+    lines.append("- Inventory rules may surface valid patterns that are not immediate bugs")
+    lines.append("")
+
+    lines.append("## 8. Recommendations")
+    lines.append("")
+    lines.append("Immediate:")
+    lines.append("- Fix S1 looped DB execution patterns")
+    lines.append("- Propagate CancellationToken correctly")
+    lines.append("")
+    lines.append("Medium-term:")
+    lines.append("- Introduce execution-context tagging")
+    lines.append("- Standardize DB access abstractions")
+    lines.append("- Improve bulk-operation utilities")
+    lines.append("")
+
+    lines.append("## Feedback To The Report Generation Team")
+    lines.append("")
+    lines.append("Feedback on NFR Digest Generation (Actionable):")
+    lines.append("1. Clarify scope in scoreboard.")
+    lines.append("If a rule quality table includes historical data, label it clearly.")
+    lines.append("If it is run-only, ensure numbers cannot exceed run totals.")
+    lines.append("2. Rename ambiguous labels.")
+    lines.append("Source split -> Confirmed source split.")
+    lines.append("Fallback/manual attention -> Analysis fallback (manual review required).")
+    lines.append("3. Avoid misleading fix suggestions.")
+    lines.append("Do not suggest CancellationToken.None as a fix.")
+    lines.append("Flag multi-statement SQL patches as conditional.")
+    lines.append("4. Separate risk vs context.")
+    lines.append('Use phrasing like "Amplifies load under concurrency" instead of "Will cause thundering herd".')
+    lines.append("5. Explicitly document auto-patch limits.")
+    lines.append("State clearly when structural refactors are required, domain knowledge is necessary, and auto-patching is intentionally skipped.")
+    lines.append("")
+
+    content = "\n".join(lines)
+    path.write_text(content, encoding="utf-8")
     pointer_root = Path(pointers_dir) if pointers_dir else Path(output_dir)
     pointer_root.mkdir(parents=True, exist_ok=True)
-    (pointer_root / "nfr_digest.md").write_text("\n".join(lines), encoding="utf-8")
+    (pointer_root / "nfr_digest.md").write_text(content, encoding="utf-8")
     return path
 
 
@@ -4131,15 +4446,22 @@ def write_sarif(summary_data, output_dir, scan_meta, pointers_dir=None):
 
         severity = review.get("severity", item.get("default_severity", "S3"))
         severity = severity if severity in SEVERITY_LEVEL else "S3"
+        message_text = _build_sarif_message(item, review)
+        execution_context = str(item.get("execution_context") or _execution_context_of(item))
+        patch_attention = str((review or {}).get("patch_attention", "unavailable") or "unavailable")
+        patch_attention_reason = str((review or {}).get("patch_attention_reason", "") or "")
 
         results.append(
             {
                 "ruleId": rid,
                 "level": SEVERITY_LEVEL[severity],
-                "message": {"text": review.get("why", item.get("match_text", "Potential NFR risk."))},
+                "message": {"text": message_text},
                 "properties": {
                     "nfr_source": item.get("source", "unknown"),
                     "confidence": review.get("confidence", 0.0),
+                    "execution_context": execution_context,
+                    "patch_attention": patch_attention,
+                    "patch_attention_reason": patch_attention_reason,
                 },
                 "locations": [
                     {
@@ -4590,6 +4912,8 @@ def main():
             f"Loaded queue state: total={len(findings)}, reviewed={len(reviewed)}, "
             f"pending={sum(1 for f in findings if status_by_key.get(f.get('finding_key')) != 'reviewed')}"
         )
+        if not scan_meta.get("ruleset"):
+            scan_meta["ruleset"] = ", ".join(_normalize_rule_paths(args.rules))
     else:
         project_name = _project_name_from_scan_path(scan_path)
         run_version = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -4615,6 +4939,7 @@ def main():
 
         rules = load_rules(args.rules)
         rule_paths = _normalize_rule_paths(args.rules)
+        scan_meta["ruleset"] = ", ".join(rule_paths)
         log_progress(f"Loaded {len(rules)} regex rule(s) from {', '.join(rule_paths)}")
         if args.diff_base:
             changed_lines_by_file = load_git_diff_filter(
@@ -5057,12 +5382,21 @@ def main():
     summary_data["llm_token_usage"] = _llm_token_usage_from_reviewed(reviewed)
     summary_data["llm_cost_estimate"] = _estimate_llm_cost(summary_data["llm_token_usage"], args)
     summary_data["rule_pipeline_stats"] = pipeline_stats
-    current_quality = summary_data.get("rule_quality", {})
+    current_quality = summary_data.get("rule_quality_run", summary_data.get("rule_quality", {}))
     summary_data["rule_precision_trend"] = build_rule_precision_trend(quality_history, current_quality)
     merged_quality = merge_rule_quality(quality_history, current_quality)
     save_rule_quality(quality_path, merged_quality)
-    summary_data["rule_quality"] = merged_quality.get("rules", {})
-    summary_data["rule_noise_recommendations"] = build_noise_recommendations(summary_data.get("rule_quality", {}))
+    summary_data["rule_quality_scope"] = "run_only"
+    summary_data["rule_quality"] = current_quality
+    summary_data["rule_quality_run"] = current_quality
+    summary_data["rule_quality_historical"] = merged_quality.get("rules", {})
+    summary_data["rule_quality_history_meta"] = merged_quality.get("meta", {})
+    summary_data["include_quality_history_in_report"] = not bool(args.no_quality_history_in_report)
+    if bool(args.no_quality_history_in_report):
+        summary_data["rule_quality_historical"] = {}
+        summary_data["rule_quality_history_meta"] = {}
+        summary_data["rule_precision_trend"] = {}
+    summary_data["rule_noise_recommendations"] = build_noise_recommendations(current_quality)
     if summary_data["rule_noise_recommendations"]:
         log_progress("Top noisy rules and recommended actions:")
         for item in summary_data["rule_noise_recommendations"]:

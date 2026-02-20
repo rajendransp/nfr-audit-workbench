@@ -8,6 +8,8 @@ This folder documents the current regex rule packs used by `nfr_scan.py`.
 | --- | ---:| --- |
 | `rules/dotnet_rules.json` | 23 | `dotnet` |
 | `rules/frontend_rules.json` | 17 | `front_end` |
+| `rules/angularjs_migration_rules.json` | 10 | `front_end` |
+| `rules/combined_concurrency_db_ruleset.json` | 17 | `dotnet` |
 | `rules/razor_rules.json` | 6 | `front_end` |
 | `rules/rest_api_rules.json` | 18 | `rest_api` |
 | `rules/all_rules.json` | 64 | mixed |
@@ -24,6 +26,19 @@ This folder documents the current regex rule packs used by `nfr_scan.py`.
 - `loading`: 8
 - `concurrency`: 5
 - `performance`: 4
+
+### Angular Migration (`rules/angularjs_migration_rules.json`)
+- `migration`: 10
+
+### Combined Concurrency + DB (`rules/combined_concurrency_db_ruleset.json`)
+- `thundering_herd`: 7
+- `db_invocation`: 4
+- `cache_candidate`: 1
+- `cache_stampede`: 1
+- `coalescing_candidate`: 1
+- `concurrency_limits`: 1
+- `file_io_loop`: 1
+- `internal_api_invocation`: 1
 
 ### Razor (`rules/razor_rules.json`)
 - `loading`: 4
@@ -93,6 +108,18 @@ Run Frontend + Razor together:
 
 ```powershell
 python nfr_scan.py --path C:\Development\CodeDocs\boldbi-server --rules rules\frontend_rules.json rules\razor_rules.json
+```
+
+Run AngularJS migration pack:
+
+```powershell
+python nfr_scan.py --path C:\Development\CodeDocs\boldbi-server --rules rules\angularjs_migration_rules.json
+```
+
+Run combined concurrency + DB pack:
+
+```powershell
+python nfr_scan.py --path C:\Development\CodeDocs\boldbi-server --rules rules\combined_concurrency_db_ruleset.json
 ```
 
 Run REST API only:

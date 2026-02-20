@@ -10,11 +10,24 @@ class RuleHarnessTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         rules = []
-        for path in ("rules/dotnet_rules.json", "rules/frontend_rules.json", "rules/rest_api_rules.json", "rules/razor_rules.json"):
+        for path in (
+            "rules/dotnet_rules.json",
+            "rules/frontend_rules.json",
+            "rules/rest_api_rules.json",
+            "rules/razor_rules.json",
+            "rules/angularjs_migration_rules.json",
+            "rules/db_access_rules.json",
+            "rules/thundering_herd_rules.json",
+        ):
             rules.extend(json.loads(Path(path).read_text(encoding="utf-8-sig")))
         cls.rule_map = {r["id"]: r for r in rules}
         cls.cases = []
-        for path in ("tests/rule_harness_cases.json", "tests/rule_harness_cases_fe_api.json"):
+        for path in (
+            "tests/rule_harness_cases.json",
+            "tests/rule_harness_cases_fe_api.json",
+            "tests/rule_harness_cases_angular_migration.json",
+            "tests/rule_harness_cases_db_and_herd.json",
+        ):
             cls.cases.extend(json.loads(Path(path).read_text(encoding="utf-8")))
 
     def test_rule_cases(self):

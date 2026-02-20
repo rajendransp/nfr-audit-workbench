@@ -1,5 +1,6 @@
 var state = {
   all: [],
+  summary: {},
   shown: [],
   pageRows: [],
   reviewState: {},
@@ -53,6 +54,7 @@ var statusEl = document.getElementById("statusText");
 var filePickerEl = document.getElementById("filePicker");
 var uploadEl = document.getElementById("uploadInput");
 var tabFindingsEl = document.getElementById("tabFindings");
+var tabAngularMigrationEl = document.getElementById("tabAngularMigration");
 var tabSafeAiEl = document.getElementById("tabSafeAi");
 var columnTogglesEl = document.getElementById("columnToggles");
 var snippetHeightEl = document.getElementById("snippetHeight");
@@ -266,9 +268,22 @@ function normalizeSafeAiPayload(json) {
 }
 
 function setViewMode(mode) {
-  state.viewMode = (mode === "safe_ai") ? "safe_ai" : "findings";
+  if (mode === "safe_ai") state.viewMode = "safe_ai";
+  else if (mode === "angular_migration") state.viewMode = "angular_migration";
+  else state.viewMode = "findings";
   if (tabFindingsEl) tabFindingsEl.classList.toggle("active", state.viewMode === "findings");
+  if (tabAngularMigrationEl) tabAngularMigrationEl.classList.toggle("active", state.viewMode === "angular_migration");
   if (tabSafeAiEl) tabSafeAiEl.classList.toggle("active", state.viewMode === "safe_ai");
+}
+
+function isAngularMigrationFinding(f) {
+  return String((f && f.rule_id) || "").toUpperCase().indexOf("NFR-FE-AJ-") === 0;
+}
+
+function migrationBucketOf(f) {
+  var b = String((f && f.angular_migration_bucket) || "").trim().toLowerCase();
+  if (b === "migrate-to-angular" || b === "remove-angularjs-dependency" || b === "needs-manual-review") return b;
+  return "needs-manual-review";
 }
 
 function topLevelOf(f) {
@@ -299,17 +314,19 @@ function refreshCategoryFilters() {
   var prevTop = topLevelEl ? topLevelEl.value : "ALL";
   var prevSub = subCategoryEl ? subCategoryEl.value : "ALL";
   var prevRule = ruleEl ? ruleEl.value : "ALL";
+  var filterBase = state.all;
+  if (state.viewMode === "angular_migration") filterBase = state.all.filter(isAngularMigrationFinding);
   var topLevels = {};
   var rules = {};
-  for (var i = 0; i < state.all.length; i++) topLevels[topLevelOf(state.all[i])] = true;
-  for (var r = 0; r < state.all.length; r++) rules[ruleOf(state.all[r])] = true;
+  for (var i = 0; i < filterBase.length; i++) topLevels[topLevelOf(filterBase[i])] = true;
+  for (var r = 0; r < filterBase.length; r++) rules[ruleOf(filterBase[r])] = true;
   setSelectOptions(ruleEl, Object.keys(rules), prevRule !== "ALL" ? prevRule : "");
   setSelectOptions(topLevelEl, Object.keys(topLevels), prevTop !== "ALL" ? prevTop : "");
 
   var selectedTop = topLevelEl ? topLevelEl.value : "ALL";
   var subs = {};
-  for (var j = 0; j < state.all.length; j++) {
-    var f = state.all[j];
+  for (var j = 0; j < filterBase.length; j++) {
+    var f = filterBase[j];
     if (selectedTop !== "ALL" && topLevelOf(f) !== selectedTop) continue;
     subs[subCategoryOf(f)] = true;
   }
@@ -318,6 +335,7 @@ function refreshCategoryFilters() {
 
 function renderCards(summary) {
   summary = summary || {};
+  state.summary = summary;
   if (state.viewMode === "safe_ai") {
     var safe = summary.safe_ai || {};
     var safeRows = [
@@ -334,6 +352,24 @@ function renderCards(summary) {
       safeHtml += '<article class="card"><div class="k">' + esc(safeRows[s][0]) + '</div><div class="v">' + esc(safeRows[s][1]) + '</div></article>';
     }
     cardsEl.innerHTML = safeHtml;
+    return;
+  }
+  if (state.viewMode === "angular_migration") {
+    var counts = summary.angular_migration_counts || {};
+    var migrationRows = [
+      ["Angular Findings", state.all.filter(isAngularMigrationFinding).length],
+      ["Migrate to Angular", Number(counts["migrate-to-angular"] || 0)],
+      ["Remove Dependency", Number(counts["remove-angularjs-dependency"] || 0)],
+      ["Manual Review", Number(counts["needs-manual-review"] || 0)],
+      ["S1", get(summary, ["by_severity", "S1"], 0)],
+      ["S2", get(summary, ["by_severity", "S2"], 0)],
+      ["S3", get(summary, ["by_severity", "S3"], 0)]
+    ];
+    var migrationHtml = "";
+    for (var m = 0; m < migrationRows.length; m++) {
+      migrationHtml += '<article class="card"><div class="k">' + esc(migrationRows[m][0]) + '</div><div class="v">' + esc(migrationRows[m][1]) + '</div></article>';
+    }
+    cardsEl.innerHTML = migrationHtml;
     return;
   }
   var confirmedComputed = 0;
@@ -621,6 +657,7 @@ function includeByFilters(f) {
   var sev = sevOf(f);
   var source = String(f.source || "unknown").toLowerCase();
   var isIssue = isIssueOf(f);
+  if (state.viewMode === "angular_migration" && !isAngularMigrationFinding(f)) return false;
   if (severityEl.value !== "ALL" && sev !== severityEl.value) return false;
   if (sourceEl.value !== "ALL" && source !== sourceEl.value) return false;
   if (ruleEl && ruleEl.value !== "ALL" && ruleOf(f) !== ruleEl.value) return false;
@@ -649,6 +686,7 @@ function includeByFilters(f) {
   var hay = [
     f.rule_id, f.rule_title, f.file, f.match_text, f.language, f.file_type,
     f.top_level_category, f.sub_category, f.trust_tier, trustTierOf(f), workflowStatusOf(f),
+    migrationBucketOf(f),
     get(f,["llm_review","title"],""), get(f,["llm_review","why"],""), get(f,["llm_review","recommendation"],"")
   ].join(" ").toLowerCase();
   return hay.indexOf(q) !== -1;
@@ -660,7 +698,13 @@ function applyFilters() {
   state.currentPage = 1;
   renderTable();
   refreshSortIndicators();
-  setStatus("Showing " + state.shown.length + " / " + state.all.length + " findings");
+  if (state.viewMode === "angular_migration") {
+    emptyEl.textContent = "No AngularJS migration findings match current filters.";
+    setStatus("Showing " + state.shown.length + " / " + state.all.filter(isAngularMigrationFinding).length + " AngularJS migration findings");
+  } else {
+    emptyEl.textContent = DEFAULT_EMPTY_TEXT;
+    setStatus("Showing " + state.shown.length + " / " + state.all.length + " findings");
+  }
 }
 
 function detailBlock(title, value, asPre) {
@@ -735,6 +779,7 @@ function showDetails(f) {
   content += detailBlock("Severity", sevOf(f));
   content += detailBlock("Rule", (f.rule_id || "-") + " (" + (f.source || "unknown") + ")");
   content += detailBlock("Trust Tier", trustTierOf(f));
+  if (isAngularMigrationFinding(f)) content += detailBlock("Angular Migration Bucket", migrationBucketOf(f));
   content += detailBlock("Grouping", topLevelOf(f) + " / " + subCategoryOf(f));
   content += detailBlock("Language / File Type", (f.language || "unknown") + " / " + (f.file_type || "unknown"));
   content += detailBlock("Effort vs Benefit", effortOf(f) + " / " + benefitOf(f));
@@ -877,18 +922,19 @@ function loadData(fileName, allowFallback) {
       if (isSafeAiPayload(json)) {
         setViewMode("safe_ai");
         json = normalizeSafeAiPayload(json);
-      } else if (state.viewMode !== "safe_ai") {
+      } else if (state.viewMode === "safe_ai") {
         setViewMode("findings");
       }
       var findings = json.findings || [];
       // Keep all reviewed findings visible in UI, including non-issue/demoted rows.
       // Summary cards still distinguish reviewed vs confirmed counts.
       state.all = findings.slice();
+      state.summary = json.summary || {};
       state.currentFile = payload.name || requested;
       if (filePickerEl) filePickerEl.value = state.currentFile;
       emptyEl.textContent = DEFAULT_EMPTY_TEXT;
       refreshCategoryFilters();
-      renderCards(json.summary || {});
+      renderCards(state.summary || {});
       applyFilters();
       setStatus("Loaded " + state.all.length + " finding(s) from " + state.currentFile);
     });
@@ -916,6 +962,7 @@ document.getElementById("reloadBtn").addEventListener("click", function () {
     .then(function () {
       // Reload should prefer latest canonical pointers for operational runs.
       if (state.viewMode === "safe_ai") return loadData("safe_ai_risk.json");
+      if (state.viewMode === "angular_migration") return loadData("findings.json");
       return loadData("findings.json");
     })
     .catch(showError);
@@ -924,7 +971,25 @@ document.getElementById("reloadBtn").addEventListener("click", function () {
 if (tabFindingsEl) {
   tabFindingsEl.addEventListener("click", function () {
     setViewMode("findings");
-    loadData(state.currentFile).catch(showError);
+    if (String(state.currentFile || "").indexOf("safe_ai_risk") !== -1) {
+      loadData("findings.json").catch(showError);
+      return;
+    }
+    renderCards(state.summary || {});
+    refreshCategoryFilters();
+    applyFilters();
+  });
+}
+if (tabAngularMigrationEl) {
+  tabAngularMigrationEl.addEventListener("click", function () {
+    setViewMode("angular_migration");
+    if (String(state.currentFile || "").indexOf("safe_ai_risk") !== -1) {
+      loadData("findings.json").catch(showError);
+      return;
+    }
+    renderCards(state.summary || {});
+    refreshCategoryFilters();
+    applyFilters();
   });
 }
 if (tabSafeAiEl) {

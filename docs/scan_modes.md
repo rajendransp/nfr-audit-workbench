@@ -27,6 +27,7 @@ This page explains how scanner modes affect findings selection, LLM review, and 
 - Disables incremental filtering.
 - Rebuilds outputs for the current run timestamp.
 - Updates baseline file for the scan path.
+- Add `--no-quality-history-in-report` when you want digest/findings summary to stay run-only (no historical quality/trend sections).
 
 ### Incremental Scan
 - Uses persisted baseline (`reports/baselines/<project>.json` by default).

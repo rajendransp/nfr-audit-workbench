@@ -1,0 +1,30 @@
+[
+  {
+    "name": "aj_001_detects_ng_controller",
+    "rule_id": "NFR-FE-AJ-001",
+    "file": "legacy-view.html",
+    "content": "<div class=\"page\" ng-controller=\"OrdersCtrl as vm\"></div>\n",
+    "expected_match_lines": [1]
+  },
+  {
+    "name": "aj_006_detects_compile_service_usage",
+    "rule_id": "NFR-FE-AJ-006",
+    "file": "legacy-directive.js",
+    "content": "angular.module('app').directive('x', function($compile){ return function(scope, element){ $compile('<div></div>')(scope); }; });\n",
+    "expected_match_lines": [1]
+  },
+  {
+    "name": "aj_007_skips_ng_repeat_with_track_by",
+    "rule_id": "NFR-FE-AJ-007",
+    "file": "list.html",
+    "content": "<li ng-repeat=\"item in vm.items track by item.id\">{{item.name}}</li>\n",
+    "expected_match_lines": []
+  },
+  {
+    "name": "aj_008_detects_state_provider_routing",
+    "rule_id": "NFR-FE-AJ-008",
+    "file": "routes.js",
+    "content": "angular.module('app').config(function($stateProvider){ $stateProvider.state('home', { url: '/home' }); });\n",
+    "expected_match_lines": [1]
+  }
+]

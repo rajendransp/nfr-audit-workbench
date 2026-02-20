@@ -1,0 +1,456 @@
+[
+  {
+    "id": "NFR-API-001",
+    "title": "Downstream/internal API call invocation with network indicators (inventory)",
+    "category": "reliability",
+    "top_level_category": "network",
+    "sub_category": "internal_api_invocation",
+    "severity": "S2",
+    "phase": "inventory",
+    "pattern": "(?i)\\bHttpClient\\b[\\s\\S]{0,80}\\.(GetAsync|PostAsync|PutAsync|DeleteAsync|SendAsync)\\s*\\(|\\b(\\w+Client|\\w+Api|\\w+Service)\\b[\\s\\S]{0,160}\\.(\\w+Async)\\s*\\((?=[\\s\\S]{0,240}\\b(Http|Request|Response|Grpc|gRPC|Refit|RestClient|RestRequest|HttpRequestMessage|HttpResponseMessage|BaseAddress|Headers)\\b)|\\bRestClient\\b[\\s\\S]{0,120}\\.(ExecuteAsync|Execute)\\s*\\(|\\bGrpc\\.Net\\.Client\\b|\\bgrpc\\b[\\s\\S]{0,120}\\bAsync\\s*\\(",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Inventory rule for outbound calls tightened to reduce false positives from generic '*client*' variables. Typed-client matches now require nearby network indicators (HTTP/Request/Response/Grpc/Refit/RestSharp, etc.).",
+    "confidence_hint": 0.7,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-DB-001",
+    "title": "DB invocation keywords with DB-specific indicators (inventory)",
+    "category": "reliability",
+    "top_level_category": "data_access",
+    "sub_category": "db_invocation",
+    "severity": "S2",
+    "pattern": "(?i)(?:\\b(DbContext|DbSet|IDbConnection|DbConnection|SqlConnection|NpgsqlConnection|SqlCommand|NpgsqlCommand|DbCommand)\\b|(?:\\bDapper\\b|\\bFromSql\\b|\\bExecuteSql\\b)|(?:\\.(ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync|AnyAsync|CountAsync|SaveChangesAsync|SaveChanges)\\s*\\()|(?:\\.(QueryAsync|ExecuteAsync|QuerySingleAsync|QueryFirstAsync)\\s*\\()|(?:\\.(ExecuteReaderAsync|ExecuteNonQueryAsync|ExecuteScalarAsync|ExecuteReader|ExecuteNonQuery|ExecuteScalar)\\s*\\())",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs",
+      "*.razor",
+      "*.cshtml",
+      "*.js",
+      "*.jsx",
+      "*.ts",
+      "*.tsx"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**",
+      "**/bin/**",
+      "**/obj/**",
+      "**/.venv/**",
+      "**/Migrations/**"
+    ],
+    "rationale": "Broad DB inventory rule tightened to require DB-specific indicators (EF Core/Dapper/ADO.NET) to avoid false positives from non-DB libraries that use 'query' terminology (e.g., DNS LookupClient).",
+    "confidence_hint": 0.7,
+    "enforcement_level": "review",
+    "phase": "inventory"
+  },
+  {
+    "id": "NFR-DB-002",
+    "title": "Raw SQL execution call",
+    "category": "reliability",
+    "top_level_category": "data_access",
+    "sub_category": "db_invocation",
+    "severity": "S2",
+    "pattern": "\\b(ExecuteSqlRaw|ExecuteSqlInterpolated|FromSqlRaw|FromSqlInterpolated|\\.execute\\s*\\(|\\.executemany\\s*\\()\\b",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs",
+      "*.razor",
+      "*.cshtml",
+      "*.js",
+      "*.jsx",
+      "*.ts"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/node_modules/**",
+      "**/.venv/**",
+      "**/Migrations/**"
+    ],
+    "rationale": "Raw SQL execution sites are important for identifying expensive query paths and potential contention points under concurrency.",
+    "confidence_hint": 0.78,
+    "enforcement_level": "review",
+    "phase": "inventory"
+  },
+  {
+    "id": "NFR-DB-004",
+    "title": "ADO.NET command execution (DB call inventory)",
+    "category": "reliability",
+    "top_level_category": "data_access",
+    "sub_category": "db_invocation",
+    "severity": "S2",
+    "phase": "inventory",
+    "pattern": "\\b(SqlCommand|NpgsqlCommand|DbCommand)\\b[\\s\\S]{0,220}\\.(ExecuteReaderAsync|ExecuteNonQueryAsync|ExecuteScalarAsync|ExecuteReader|ExecuteNonQuery|ExecuteScalar)\\s*\\(",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs",
+      "**/Migrations/**"
+    ],
+    "rationale": "Captures raw DB calls bypassing EF/Dapper patterns to build complete DB-call inventory before analyzing herd amplifiers.",
+    "confidence_hint": 0.8,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-DB-003",
+    "title": "EF Core repository query invocation hotspot",
+    "category": "performance",
+    "top_level_category": "data_access",
+    "sub_category": "db_invocation",
+    "severity": "S3",
+    "pattern": "\\b(_db\\w*|dbContext|context|repository|repo)\\b[\\s\\S]{0,200}\\.(ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync|AnyAsync|CountAsync|SaveChangesAsync|SaveChanges)\\s*\\(",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs",
+      "**/Migrations/**"
+    ],
+    "rationale": "Highlights common EF Core query/write invocation points for downstream pressure analysis and query-budgeting.",
+    "confidence_hint": 0.6,
+    "enforcement_level": "review",
+    "phase": "inventory"
+  },
+  {
+    "id": "NFR-TH-001",
+    "title": "Loop-triggered remote/DB call (thundering herd candidate)",
+    "category": "performance",
+    "top_level_category": "concurrency",
+    "sub_category": "thundering_herd",
+    "severity": "S1",
+    "pattern": "\\b(for(each)?|while)\\b[\\s\\S]{0,360}\\b(\\$http\\.(get|post|put|delete)|fetch\\s*\\(|axios\\.(get|post|put|delete|request)|\\b(pool|client|db)\\.query\\s*\\()",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs",
+      "*.razor",
+      "*.cshtml",
+      "*.js",
+      "*.jsx",
+      "*.ts",
+      "*.tsx"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**",
+      "**/.venv/**",
+      "**/bin/**",
+      "**/obj/**"
+    ],
+    "rationale": "Calls executed inside loops can multiply under concurrent traffic and produce herd effects. Candidate for batching, queueing, or coalescing.",
+    "confidence_hint": 0.85,
+    "enforcement_level": "review",
+    "phase": "amplifier"
+  },
+  {
+    "id": "NFR-TH-002",
+    "title": "Timer-based polling with remote/DB call",
+    "category": "performance",
+    "top_level_category": "concurrency",
+    "sub_category": "thundering_herd",
+    "severity": "S1",
+    "pattern": "\\b(setInterval|\\$interval|Timer\\s*\\()\\s*\\([\\s\\S]{0,320}\\b(\\$http\\.(get|post)|fetch\\s*\\(|axios\\.(get|post|request)|\\b(pool|client|db)\\.query\\s*\\()",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.razor",
+      "*.cshtml",
+      "*.js",
+      "*.jsx",
+      "*.ts",
+      "*.tsx",
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**",
+      "**/bin/**",
+      "**/obj/**"
+    ],
+    "rationale": "Synchronized polling can create periodic traffic spikes. Candidate for jittered backoff, cache warming, or push/event-driven updates.",
+    "confidence_hint": 0.86,
+    "enforcement_level": "review",
+    "phase": "amplifier"
+  },
+  {
+    "id": "NFR-TH-005",
+    "title": "Task.WhenAll fan-out over remote/DB calls",
+    "category": "scalability",
+    "top_level_category": "concurrency",
+    "sub_category": "thundering_herd",
+    "severity": "S1",
+    "pattern": "\\bTask\\.WhenAll\\s*\\([\\s\\S]{0,500}\\b(HttpClient|_httpClient|client)\\.(GetAsync|PostAsync|SendAsync)|\\bTask\\.WhenAll\\s*\\([\\s\\S]{0,500}\\.(ToListAsync|AnyAsync|CountAsync|FirstOrDefaultAsync)\\s*\\(",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs",
+      "**/Migrations/**"
+    ],
+    "rationale": "Large fan-out with Task.WhenAll can amplify load on APIs/DBs during peak concurrency. Candidate for bounded concurrency, caching, or request coalescing.",
+    "confidence_hint": 0.8,
+    "enforcement_level": "review",
+    "phase": "amplifier"
+  },
+  {
+    "id": "NFR-TH-006",
+    "title": "Parallel.ForEachAsync remote/DB call fan-out",
+    "category": "scalability",
+    "top_level_category": "concurrency",
+    "sub_category": "thundering_herd",
+    "severity": "S1",
+    "pattern": "\\bParallel\\.ForEachAsync\\s*\\([\\s\\S]{0,420}\\b(HttpClient|_httpClient|client)\\.(GetAsync|PostAsync|SendAsync)|\\bParallel\\.ForEachAsync\\s*\\([\\s\\S]{0,420}\\.(ToListAsync|AnyAsync|CountAsync|FirstOrDefaultAsync)\\s*\\(",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs",
+      "**/Migrations/**"
+    ],
+    "rationale": "Unbounded or high-degree parallel fan-out can cause herd-like pressure on downstream services and databases.",
+    "confidence_hint": 0.82,
+    "enforcement_level": "review",
+    "phase": "amplifier"
+  },
+  {
+    "id": "NFR-TH-007",
+    "title": "Task.WhenAll fan-out over internal service/client calls",
+    "category": "scalability",
+    "top_level_category": "concurrency",
+    "sub_category": "thundering_herd",
+    "severity": "S1",
+    "phase": "amplifier",
+    "pattern": "\\bTask\\.WhenAll\\s*\\([\\s\\S]{0,700}\\b(_?\\w+(Client|Service|Api))\\b[\\s\\S]{0,120}\\.(\\w+Async)\\s*\\(",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Typed clients and internal services often hide HTTP/GRPC. WhenAll fan-out can stampede downstream dependencies.",
+    "confidence_hint": 0.7,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-TH-008A",
+    "title": "C# loop-triggered DB call (N+1 / herd candidate)",
+    "category": "performance",
+    "top_level_category": "concurrency",
+    "sub_category": "thundering_herd",
+    "severity": "S1",
+    "phase": "amplifier",
+    "pattern": "(?i)\\b(for(each)?|while)\\b[\\s\\S]{0,520}\\bawait\\b[\\s\\S]{0,140}\\.(ToListAsync|FirstOrDefaultAsync|SingleOrDefaultAsync|AnyAsync|CountAsync|SaveChangesAsync|SaveChanges|ExecuteReaderAsync|ExecuteNonQueryAsync|ExecuteScalarAsync|ExecuteReader|ExecuteNonQuery|ExecuteScalar|QueryAsync|ExecuteAsync|QuerySingleAsync|QueryFirstAsync)\\s*\\(",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs",
+      "**/Migrations/**"
+    ],
+    "rationale": "Awaited DB execution inside loops can produce N+1 patterns and amplify load under concurrency. Prefer batching (IN queries/joins), bulk operations, or server-side aggregation.",
+    "confidence_hint": 0.85,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-TH-008B",
+    "title": "C# loop-triggered downstream/internal API call (herd candidate)",
+    "category": "performance",
+    "top_level_category": "concurrency",
+    "sub_category": "thundering_herd",
+    "severity": "S1",
+    "phase": "amplifier",
+    "pattern": "(?i)\\b(for(each)?|while)\\b[\\s\\S]{0,520}\\bawait\\b[\\s\\S]{0,180}(?:HttpClient\\b[\\s\\S]{0,80}\\.(GetAsync|PostAsync|PutAsync|DeleteAsync|SendAsync)\\s*\\(|\\b(\\w+Client|\\w+Api)\\b[\\s\\S]{0,140}\\.(\\w+Async)\\s*\\()(?=[\\s\\S]{0,240}\\b(Http|Request|Response|Grpc|gRPC|Refit|RestClient|RestRequest|HttpRequestMessage|HttpResponseMessage|BaseAddress|Headers)\\b)",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Awaited downstream calls inside loops can flood internal services under concurrent traffic. Prefer batching endpoints, caching, request coalescing, or bounded concurrency.",
+    "confidence_hint": 0.75,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-HARD-001",
+    "title": "Unbounded Parallel.ForEachAsync / Task.WhenAll over dynamic collection (hardening)",
+    "category": "scalability",
+    "top_level_category": "concurrency",
+    "sub_category": "concurrency_limits",
+    "severity": "S2",
+    "phase": "hardening",
+    "pattern": "\\b(Parallel\\.ForEachAsync|Task\\.WhenAll)\\b(?![\\s\\S]{0,300}MaxDegreeOfParallelism)",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Fan-out without bounded concurrency can cause threadpool starvation and dependency stampedes; require MaxDegreeOfParallelism or explicit gating (SemaphoreSlim).",
+    "confidence_hint": 0.55,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-HARD-002",
+    "title": "Cache-miss stampede candidate (cache get then set without coalescing hint)",
+    "category": "reliability",
+    "top_level_category": "caching",
+    "sub_category": "cache_stampede",
+    "severity": "S2",
+    "phase": "hardening",
+    "pattern": "(?i)\\b(IMemoryCache|IDistributedCache|MemoryCache|DistributedCache|cache)\\b[\\s\\S]{0,220}(TryGetValue|GetStringAsync|GetAsync)\\s*\\([\\s\\S]{0,360}\\b(cache)\\b[\\s\\S]{0,220}\\b(Set|SetAsync|SetStringAsync|CreateEntry|GetOrCreateAsync)\\b",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Flags potential cache stampede on misses: cache get followed by set without obvious request coalescing (per-key locks/singleflight) or stale-while-revalidate. Review manually.",
+    "confidence_hint": 0.45,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-IO-LOOP-001",
+    "title": "Awaited file I/O inside loops (performance risk, not herd)",
+    "category": "performance",
+    "top_level_category": "io",
+    "sub_category": "file_io_loop",
+    "severity": "S2",
+    "phase": "hardening",
+    "pattern": "(?i)\\b(for(each)?|while)\\b[\\s\\S]{0,520}\\bawait\\b[\\s\\S]{0,160}\\bFile\\.(ReadAllTextAsync|ReadAllBytesAsync|ReadAllLinesAsync|WriteAllTextAsync|WriteAllBytesAsync|WriteAllLinesAsync|ReadAsync|WriteAsync)\\s*\\(",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.cs"
+    ],
+    "exclude_globs": [
+      "**/bin/**",
+      "**/obj/**",
+      "**/*Tests*.cs"
+    ],
+    "rationale": "Awaited file I/O inside loops can severely slow operations and increase resource contention. Consider batching, streaming, or minimizing per-iteration disk access.",
+    "confidence_hint": 0.8,
+    "enforcement_level": "review"
+  },
+  {
+    "id": "NFR-TH-003",
+    "title": "High-frequency watcher/input network call without debounce",
+    "category": "scalability",
+    "top_level_category": "concurrency",
+    "sub_category": "coalescing_candidate",
+    "severity": "S2",
+    "pattern": "(\\$watch(Collection|Group)?\\s*\\(|on(Change|Input|KeyUp)\\s*=\\s*\\{)[\\s\\S]{0,280}\\b(\\$http\\.(get|post|put|delete)|fetch\\s*\\(|axios\\.(get|post|put|delete|request))(?![\\s\\S]{0,200}\\b(debounce|throttle|distinctUntilChanged|auditTime)\\b)",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.razor",
+      "*.cshtml",
+      "*.js",
+      "*.jsx",
+      "*.ts",
+      "*.tsx",
+      "*.vue"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**"
+    ],
+    "rationale": "Frequent UI-triggered calls without shaping can create concurrent surges. Candidate for debounce and in-flight request coalescing.",
+    "confidence_hint": 0.7,
+    "enforcement_level": "review",
+    "phase": "hardening"
+  },
+  {
+    "id": "NFR-TH-004",
+    "title": "GET call without explicit cache/coalescing hint",
+    "category": "scalability",
+    "top_level_category": "concurrency",
+    "sub_category": "cache_candidate",
+    "severity": "S2",
+    "pattern": "\\b(\\$http\\.get\\s*\\((?![^\\)]*\\bcache\\s*:\\s*true\\b)[^\\)]*\\)|axios\\.get\\s*\\([^\\)]*\\)|fetch\\s*\\([^\\)]*\\))(?!(?:[\\s\\S]{0,220}\\b(cache\\s*:\\s*true|cache\\s*:\\s*[\"']force-cache[\"']|shareReplay\\s*\\(|memoize|inflight|coalesc|dedup)\\b))",
+    "ignore_comment_lines": true,
+    "include_globs": [
+      "*.razor",
+      "*.cshtml",
+      "*.js",
+      "*.jsx",
+      "*.ts",
+      "*.tsx"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/bower_components/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/*.min.js",
+      "**/vendor/**",
+      "**/lib/**",
+      "**/wwwroot/lib/**"
+    ],
+    "rationale": "Identifies likely opportunities for client caching and in-flight dedup/coalescing to reduce pressure during concurrent reads.",
+    "confidence_hint": 0.55,
+    "enforcement_level": "review",
+    "phase": "hardening"
+  }
+]

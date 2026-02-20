@@ -86,6 +86,8 @@ Use a specific rule pack:
 ```powershell
 python nfr_scan.py --path C:developmentmy-service --rules rules/dotnet_rules.json
 python nfr_scan.py --path C:developmentmy-frontend --rules rules/frontend_rules.json
+python nfr_scan.py --path C:developmentmy-legacy-angularjs --rules rules/angularjs_migration_rules.json
+python nfr_scan.py --path C:developmentmy-repo --rules rules/combined_concurrency_db_ruleset.json
 python nfr_scan.py --path C:developmentmy-api --rules rules/rest_api_rules.json
 python nfr_scan.py --path C:developmentmy-ui --rules rules/razor_rules.json
 ```
@@ -170,6 +172,7 @@ LLM batching behavior:
 -   `--high-confidence-threshold` (default `0.9`) and `--high-confidence-max-severity` (default `S2`) control fast-route eligibility.
 -   `--auto-demote-noisy-rules` (default on) uses historical rule quality to demote noisy rules in queue ordering.
 -   Rule quality settings: `--rule-quality-file`, `--noisy-rule-min-reviewed`, `--noisy-rule-max-precision`, `--noisy-rule-max-fallback-rate`.
+-   Use `--no-quality-history-in-report` to keep findings JSON and digest strictly run-scoped (hide historical quality aggregates/trend).
 -   Diff/PR mode: `--diff-base <git-ref>` limits scan to changed files/lines vs `--diff-head` (default `HEAD`); add `--diff-files-only` to scan all lines in changed files.
 -   CI policy modes: `--ci-mode off|warn|soft-fail|hard-fail` with thresholds by severity (`--ci-threshold-s1..s4`) and overall (`--ci-max-total`).
 -   Patch CI thresholds: `--ci-min-patch-generated` and `--ci-max-patch-no-op`.
@@ -344,6 +347,7 @@ Finding objects include:
 -   grouping metadata: `top_level_category` (`dotnet`/`front_end`/`rest_api`), `sub_category` (`concurrency`/`performance`/`loading`)
 -   triage metadata: `severity`, `confidence`, `effort`, `benefit`, `quick_win`
 -   trust metadata: `trust_tier` (`llm_confirmed`/`fast_routed`/`fallback`/`regex_only`/`roslyn`)
+-   execution context metadata: `execution_context` (`request_path`/`background_job`/`migration_admin`/`unknown`)
 -   action metadata: `action_bucket` (`app_code`/`dependency_risk`), `action_hint`
 -   reliability metadata: `llm_error_kind`, `llm_attempts`, `llm_retried`
 -   fallback governance metadata: `llm_transport.fallback_used`, dedicated fallback report JSON

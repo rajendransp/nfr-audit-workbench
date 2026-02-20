@@ -52,6 +52,43 @@ This catalog reflects the current JSON rule packs.
 | NFR-FE-015 | addEventListener in effect without cleanup | S2 | concurrency | 0.6 |
 | NFR-FE-016 | Large bundle import anti-patterns | S3 | loading | 0.75 |
 
+## AngularJS Migration Rules (`rules/angularjs_migration_rules.json`)
+
+| Rule ID | Title | Severity | Sub Category | Confidence |
+| --- | --- | --- | --- | ---:|
+| NFR-FE-AJ-001 | AngularJS controller declaration in template | S2 | migration | 0.95 |
+| NFR-FE-AJ-002 | AngularJS two-way binding with ng-model | S2 | migration | 0.95 |
+| NFR-FE-AJ-003 | AngularJS scope object usage | S2 | migration | 0.9 |
+| NFR-FE-AJ-004 | AngularJS module controller registration | S2 | migration | 0.95 |
+| NFR-FE-AJ-005 | AngularJS directive with compile/link or replace:true | S1 | migration | 0.75 |
+| NFR-FE-AJ-006 | AngularJS dynamic template compilation with $compile | S1 | migration | 0.95 |
+| NFR-FE-AJ-007 | AngularJS list rendering without stable identity (ng-repeat track by) | S3 | migration | 0.8 |
+| NFR-FE-AJ-008 | AngularJS router configuration (ngRoute/ui-router) | S2 | migration | 0.9 |
+| NFR-FE-AJ-009 | AngularJS view placeholders in templates | S2 | migration | 0.9 |
+| NFR-FE-AJ-010 | AngularJS filters in template expressions | S3 | migration | 0.7 |
+
+## Combined Concurrency + DB Rules (`rules/combined_concurrency_db_ruleset.json`)
+
+| Rule ID | Title | Severity | Sub Category | Confidence |
+| --- | --- | --- | --- | ---:|
+| NFR-API-001 | Downstream/internal API call invocation with network indicators (inventory) | S2 | internal_api_invocation | - |
+| NFR-DB-001 | DB invocation keywords with DB-specific indicators (inventory) | S2 | db_invocation | - |
+| NFR-DB-002 | Raw SQL execution call | S2 | db_invocation | - |
+| NFR-DB-004 | ADO.NET command execution (DB call inventory) | S2 | db_invocation | - |
+| NFR-DB-003 | EF Core repository query invocation hotspot | S3 | db_invocation | - |
+| NFR-TH-001 | Loop-triggered remote/DB call (thundering herd candidate) | S1 | thundering_herd | - |
+| NFR-TH-002 | Timer-based polling with remote/DB call | S1 | thundering_herd | - |
+| NFR-TH-005 | Task.WhenAll fan-out over remote/DB calls | S1 | thundering_herd | - |
+| NFR-TH-006 | Parallel.ForEachAsync remote/DB call fan-out | S1 | thundering_herd | - |
+| NFR-TH-007 | Task.WhenAll fan-out over internal service/client calls | S1 | thundering_herd | - |
+| NFR-TH-008A | C# loop-triggered DB call (sequential loop-triggered execution / herd candidate) | S1 | thundering_herd | - |
+| NFR-TH-008B | C# loop-triggered downstream/internal API call (herd candidate) | S1 | thundering_herd | - |
+| NFR-HARD-001 | Unbounded Parallel.ForEachAsync / Task.WhenAll over dynamic collection (hardening) | S2 | concurrency_limits | - |
+| NFR-HARD-002 | Cache-miss stampede candidate (cache get then set without coalescing hint) | S2 | cache_stampede | - |
+| NFR-IO-LOOP-001 | Awaited file I/O inside loops (performance risk, not herd) | S2 | file_io_loop | - |
+| NFR-TH-003 | High-frequency watcher/input network call without debounce | S2 | coalescing_candidate | - |
+| NFR-TH-004 | GET call without explicit cache/coalescing hint | S2 | cache_candidate | - |
+
 ## Razor Rules (`rules/razor_rules.json`)
 
 | Rule ID | Title | Severity | Sub Category | Confidence |
