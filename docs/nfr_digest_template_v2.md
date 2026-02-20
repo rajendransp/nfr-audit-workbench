@@ -153,3 +153,22 @@ Flag multi-statement SQL patches as conditional.
 Use phrasing like "Amplifies load under concurrency" instead of "Will cause thundering herd".
 5. Explicitly document auto-patch limits.
 State clearly when structural refactors are required, domain knowledge is necessary, and auto-patching is intentionally skipped.
+
+## 9. Detailed Findings
+
+For each confirmed finding, include:
+- Rule ID
+- Severity, confidence, source
+- Execution context
+- File and line location
+- Why it is a risk
+- Recommended remediation
+- Patch attention and reason
+- Suggested patch (if available)
+
+## 10. Analysis Fallback (Manual Review Required)
+
+Include fallback findings where automated review could not complete confidently:
+- Rule ID
+- File and line location
+- Error kind

@@ -4421,6 +4421,52 @@ def write_markdown(summary_data, output_dir, roslyn_meta, scan_meta, pointers_di
     lines.append("State clearly when structural refactors are required, domain knowledge is necessary, and auto-patching is intentionally skipped.")
     lines.append("")
 
+    lines.append("## 9. Detailed Findings")
+    lines.append("")
+    if not confirmed:
+        lines.append("No confirmed findings in this run.")
+    else:
+        for item in confirmed:
+            review = item.get("llm_review", {}) or {}
+            severity = str(review.get("severity", item.get("default_severity", "S3")) or "S3").upper()
+            confidence = review.get("confidence", 0.0)
+            execution_context = str(item.get("execution_context") or _execution_context_of(item))
+            lines.append(f"### {review.get('title', item.get('rule_title', 'Untitled finding'))}")
+            lines.append(f"- Rule ID: `{item.get('rule_id', 'unknown')}`")
+            lines.append(f"- Severity: `{severity}`")
+            lines.append(f"- Confidence: `{confidence}`")
+            lines.append(f"- Source: `{item.get('source', 'unknown')}`")
+            lines.append(f"- Execution Context: `{execution_context}`")
+            lines.append(f"- Location: `{item.get('file', 'unknown')}:{item.get('line', 1)}`")
+            lines.append(f"- Why: {review.get('why', item.get('match_text', 'N/A'))}")
+            lines.append(f"- Recommendation: {review.get('recommendation', 'N/A')}")
+            lines.append(f"- Patch Attention: `{review.get('patch_attention', 'unavailable')}` ({review.get('patch_attention_reason', 'n/a')})")
+            testing_notes = list(review.get("testing_notes", []) or [])
+            if testing_notes:
+                lines.append("- Testing Notes:")
+                for note in testing_notes[:5]:
+                    lines.append(f"  - {note}")
+            patch_text = str(review.get("patch", "unknown") or "unknown").strip()
+            if patch_text and patch_text.lower() != "unknown":
+                lines.append("- Suggested Patch:")
+                lines.append("```diff")
+                lines.append(patch_text)
+                lines.append("```")
+            lines.append("")
+
+    lines.append("## 10. Analysis Fallback (Manual Review Required)")
+    lines.append("")
+    if not fallback_items:
+        lines.append("No fallback/manual-attention findings in this run.")
+    else:
+        lines.append(f"Total fallback findings: {len(fallback_items)}")
+        for item in fallback_items:
+            lines.append(
+                f"- `{item.get('rule_id', 'unknown')}` at `{item.get('file', 'unknown')}:{item.get('line', 1)}` "
+                f"(error_kind=`{item.get('llm_error_kind', '')}`)"
+            )
+    lines.append("")
+
     content = "\n".join(lines)
     path.write_text(content, encoding="utf-8")
     pointer_root = Path(pointers_dir) if pointers_dir else Path(output_dir)
